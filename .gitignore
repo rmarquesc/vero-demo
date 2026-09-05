@@ -23,6 +23,9 @@ deployment.json
 
 # Wallet seed (sensitive)
 
+# Credential secret backing the Vero commitment (sensitive)
+.vero-credential
+
 # OS generated files
 .DS_Store
 Thumbs.db

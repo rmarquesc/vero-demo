@@ -17,10 +17,27 @@ npm run test:e2e
 `npm run setup` runs end-to-end with no prompts:
 
 1. `docker compose up -d --wait` — starts a local Midnight devnet (node, indexer, proof-server) and blocks until all three pass their healthchecks.
-2. `npm run compile` — compiles `contracts/hello-world.compact` to `contracts/managed/hello-world/`.
+2. `npm run compile` — compiles `contracts/vero.compact` to `contracts/managed/vero/`.
 3. `npm run deploy` — derives the genesis-seed wallet (NIGHT pre-minted), registers UTXOs for DUST generation, deploys the contract, writes `.midnight-state.json`.
 
-`npm run test:e2e` reconnects to the deployed contract and reads its ledger state. Exits 0 if the contract is live and indexable.
+`npm run test:e2e` reconnects to the deployed contract, decodes its ledger as a Vero ledger, and checks the credential commitment is present. Exits 0 if the contract is live and indexable.
+
+## The credential secret
+
+`verifySource` proves that the caller holds a secret whose commitment matches
+the one stored on-chain. That secret is the demo issuer's credential, and it
+must be identical at deploy time (which derives the commitment from it) and at
+proof time (which proves against it).
+
+It is resolved in this order:
+
+1. `VERO_CREDENTIAL_SECRET` — 64 hex characters, for CI or a shared demo.
+2. `.vero-credential` — written on first deploy, mode `0600`, gitignored.
+3. Freshly generated and written to that file.
+
+Deleting `.vero-credential` after deploying means every later proof fails the
+commitment assertion. That is the contract behaving correctly, not a bug — the
+CLI says so explicitly when it happens. Redeploy to start over.
 
 ## Local devnet
 
@@ -183,7 +200,8 @@ generated state.
 ```
 vero-demo/
 ├── contracts/
-│   └── hello-world.compact     # Compact source
+│   ├── vero.compact            # Compact source — the credential circuit
+│   └── hello-world.compact     # original create-mn-app scaffold, kept for reference
 ├── scripts/
 │   └── e2e-check.ts            # smoke + read-back
 ├── src/
@@ -192,8 +210,10 @@ vero-demo/
 │   ├── setup.ts                # orchestrator for `npm run setup`
 │   ├── deploy.ts               # deploy the contract
 │   ├── cli.ts                  # interact with deployed contract
+│   ├── vero-credential.ts      # credential secret, private state, witness
 │   └── check-balance.ts        # NIGHT / DUST balance
 ├── docker-compose.yml          # node + indexer + proof-server
+├── .vero-credential            # demo credential secret (gitignored)
 ├── .midnight-state.json        # written by deploy (gitignored)
 ├── .midnight-wallet-state/     # serialized sync state per network (gitignored)
 ├── package.json

@@ -19,13 +19,15 @@ import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-p
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
+import { loadOrCreateCredentialSecret, createPrivateState, witnesses, toHex } from './vero-credential';
 
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
 
-// Identifier under which this contract's private state is stored. The
-// hello-world contract has no witnesses, so its private state is empty ({}).
-const PRIVATE_STATE_ID = 'helloWorldPrivateState';
+// Identifier under which this contract's private state is stored. Vero's
+// private state holds the credential secret that backs the witness, so the
+// CLI must reconnect under this same id to prove against the same secret.
+const PRIVATE_STATE_ID = 'veroPrivateState';
 
 // Upper bound on the DUST wait. A healthy local devnet produces DUST within
 // seconds of registration; anything approaching this means the node, the
@@ -77,7 +79,7 @@ async function waitForProofServer(maxAttempts = 60, delayMs = 2000): Promise<boo
 // ─── Compiled contract loading ─────────────────────────────────────────────────
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'vero');
 const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
 
 if (!fs.existsSync(contractPath)) {
@@ -87,10 +89,30 @@ if (!fs.existsSync(contractPath)) {
 
 const Vero = await import(pathToFileURL(contractPath).href);
 
-const compiledContract = CompiledContract.make('vero', Vero.Contract).pipe(
-  CompiledContract.withVacantWitnesses,
-  CompiledContract.withCompiledFileAssets(zkConfigPath),
+// withVacantWitnesses (what the scaffold used) is for contracts that declare
+// no witnesses. Vero declares credentialSecret, so the real implementation has
+// to be attached here or the circuit cannot read the secret.
+//
+// The pipeline stages infer their parameters from the contract type, but the
+// contract arrives from a dynamic import (typed any), so those conditional
+// types collapse to `never` and reject every argument — hence casting the
+// stage functions. The witness shape is still enforced for real by the
+// compiler-generated Witnesses<PS> type in
+// contracts/managed/vero/contract/index.d.ts.
+const compiledContract = (CompiledContract.make('vero', Vero.Contract) as any).pipe(
+  (CompiledContract.withWitnesses as any)(witnesses),
+  (CompiledContract.withCompiledFileAssets as any)(zkConfigPath),
 );
+
+// ─── Credential ────────────────────────────────────────────────────────────────
+//
+// The commitment is derived with the contract's own pureCircuits export, i.e.
+// the exact same persistentHash the circuit runs. Recomputing it by hand in
+// TypeScript would be a second implementation to keep in sync, and any drift
+// would only surface as an unexplained assertion failure at proof time.
+
+const { secret: credentialSecret, source: secretSource } = loadOrCreateCredentialSecret();
+const credentialCommitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(credentialSecret);
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
 
@@ -300,6 +322,14 @@ async function main() {
   await new Promise((r) => setTimeout(r, 6000));
   process.stdout.write(' done.\n');
 
+  const secretOrigin = {
+    env: 'VERO_CREDENTIAL_SECRET',
+    file: '.vero-credential',
+    generated: '.vero-credential (newly generated)',
+  }[secretSource];
+  console.log(`  Credential secret: ${secretOrigin}`);
+  console.log(`  Commitment:        ${toHex(credentialCommitment)}\n`);
+
   console.log('  Deploying contract...\n');
 
   // Fallback timing. The 6s pre-pause above handles the common case; this
@@ -314,16 +344,15 @@ async function main() {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       // Midnight.js 4.1.x supplies private state via privateStateId +
-      // initialPrivateState (empty here — the hello-world contract has no
-      // witnesses). args is the contract constructor's arguments: empty for
-      // hello-world's no-arg constructor. (Statically-typed contracts can omit
-      // args entirely; this script loads the contract dynamically, so the
-      // conditional args type widens to any[] and an explicit [] is required.)
+      // initialPrivateState. Vero seeds it with the credential secret so the
+      // witness can read it. args is the contract constructor's arguments:
+      // Vero's constructor takes the credential commitment, which is what
+      // every later proof is checked against.
       deployed = await deployContract(providers, {
         compiledContract: compiledContract as any,
-        args: [],
+        args: [credentialCommitment],
         privateStateId: PRIVATE_STATE_ID,
-        initialPrivateState: {},
+        initialPrivateState: createPrivateState(credentialSecret),
       });
       break;
     } catch (err: any) {

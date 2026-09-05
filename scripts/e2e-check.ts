@@ -17,12 +17,13 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { resolveNetwork, getOrCreateWallet, formatWalletBackupNotice, getDeployment } from '../src/network';
 import { createWallet, persistWalletState } from '../src/wallet';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
+import { loadOrCreateCredentialSecret, createPrivateState, witnesses, toHex } from '../src/vero-credential';
 
 // @ts-expect-error wallet sync requires WebSocket
 globalThis.WebSocket = WebSocket;
 
-// Must match the privateStateId used at deploy time (witness-free → empty state).
-const PRIVATE_STATE_ID = 'helloWorldPrivateState';
+// Must match the privateStateId used at deploy time.
+const PRIVATE_STATE_ID = 'veroPrivateState';
 
 // ─── Network configuration ─────────────────────────────────────────────────────
 
@@ -56,14 +57,17 @@ async function main() {
 
   // 2. Build wallet and providers
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+  const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'vero');
   const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
   if (!fs.existsSync(contractPath)) fail('Compiled contract missing — run `npm run compile`.');
-  const HelloWorld = await import(pathToFileURL(contractPath).href);
-  const compiledContract = CompiledContract.make('hello-world', HelloWorld.Contract).pipe(
-    CompiledContract.withVacantWitnesses,
-    CompiledContract.withCompiledFileAssets(zkConfigPath),
+  const Vero = await import(pathToFileURL(contractPath).href);
+  // Stage functions cast for the same reason as in src/deploy.ts: the contract
+  // arrives from a dynamic import, so the inferred parameter types collapse.
+  const compiledContract = (CompiledContract.make('vero', Vero.Contract) as any).pipe(
+    (CompiledContract.withWitnesses as any)(witnesses),
+    (CompiledContract.withCompiledFileAssets as any)(zkConfigPath),
   );
+  const { secret: credentialSecret } = loadOrCreateCredentialSecret();
 
   const walletCtx = await createWallet({ network, networkConfig, seed: SEED });
   await walletCtx.wallet.waitForSyncedState();
@@ -86,7 +90,7 @@ async function main() {
 
   const providers = {
     privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'hello-world-state',
+      privateStateStoreName: 'vero-state',
       accountId: walletCtx.unshieldedKeystore.getBech32Address().toString(),
       // SDK requires ≥16 chars. e2e-check is read-only so we don't expose
       // the env-var override here — match the deploy script's local-devnet default.
@@ -105,7 +109,7 @@ async function main() {
       contractAddress: deployment.address,
       compiledContract: compiledContract as any,
       privateStateId: PRIVATE_STATE_ID,
-      initialPrivateState: {},
+      initialPrivateState: createPrivateState(credentialSecret),
     });
   } catch (err: any) {
     await walletCtx.wallet.stop();
@@ -121,9 +125,26 @@ async function main() {
     fail(`queryContractState returned null for ${deployment.address}`);
   }
 
+  // Decode the state as Vero's ledger. queryContractState returning non-null
+  // only proves something is deployed there; this proves it is this contract,
+  // with the credential commitment its constructor was given.
+  let ledgerState: any;
+  try {
+    ledgerState = Vero.ledger(onChainState.data);
+  } catch (err: any) {
+    await walletCtx.wallet.stop();
+    fail(`on-chain state is not a Vero ledger: ${err?.message ?? err}`);
+  }
+  if (!(ledgerState.acceptedCredentialCommitment?.length === 32)) {
+    await walletCtx.wallet.stop();
+    fail('acceptedCredentialCommitment missing or not 32 bytes');
+  }
+
   console.log(`✅ e2e-check passed`);
   console.log(`   contractAddress: ${deployment.address}`);
   console.log(`   network:         ${network}`);
+  console.log(`   commitment:      ${toHex(ledgerState.acceptedCredentialCommitment)}`);
+  console.log(`   verified posts:  ${ledgerState.verifiedPosts.size()}`);
 
   await walletCtx.wallet.stop();
   process.exit(0);

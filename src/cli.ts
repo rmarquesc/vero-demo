@@ -18,14 +18,15 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { resolveNetwork, getOrCreateWallet, formatWalletBackupNotice, getDeployment } from './network';
 import { createWallet, persistWalletState, unshieldedToken, type WalletContext } from './wallet';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
+import { loadOrCreateCredentialSecret, createPrivateState, witnesses, hashPost, toHex } from './vero-credential';
 
 // Enable WebSocket for GraphQL subscriptions
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
 
 // Must match the privateStateId used at deploy time so the CLI reconnects to
-// the same private state. The hello-world contract has no witnesses (empty state).
-const PRIVATE_STATE_ID = 'helloWorldPrivateState';
+// the same private state — and therefore the same credential secret.
+const PRIVATE_STATE_ID = 'veroPrivateState';
 
 const { network, config: networkConfig } = resolveNetwork();
 const WALLET = getOrCreateWallet(network);
@@ -36,7 +37,7 @@ const SEED = WALLET.seed;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
+const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'vero');
 
 // Load compiled contract
 const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
@@ -49,10 +50,21 @@ if (!fs.existsSync(contractPath)) {
 
 const Vero = await import(pathToFileURL(contractPath).href);
 
-const compiledContract = CompiledContract.make('vero', Vero.Contract).pipe(
-  CompiledContract.withVacantWitnesses,
-  CompiledContract.withCompiledFileAssets(zkConfigPath),
+// The pipeline stages infer their parameters from the contract type, but the
+// contract is loaded via dynamic import (typed any), so those conditional
+// types collapse to `never` and reject every argument — hence casting the
+// stage functions. The witness shape is still enforced for real by the
+// compiler-generated Witnesses<PS> type in
+// contracts/managed/vero/contract/index.d.ts.
+const compiledContract = (CompiledContract.make('vero', Vero.Contract) as any).pipe(
+  (CompiledContract.withWitnesses as any)(witnesses),
+  (CompiledContract.withCompiledFileAssets as any)(zkConfigPath),
 );
+
+// Same secret the deploy used. If these diverge the circuit's commitment
+// assertion fails and every proof is rejected — which is the contract working
+// correctly, but looks like a bug, so surface the source explicitly below.
+const { secret: credentialSecret, source: secretSource } = loadOrCreateCredentialSecret();
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
 
@@ -161,17 +173,18 @@ async function main() {
       compiledContract: compiledContract as any,
       contractAddress: deployment.address,
       privateStateId: PRIVATE_STATE_ID,
-      initialPrivateState: {},
+      initialPrivateState: createPrivateState(credentialSecret),
     });
 
-    console.log('  ✅ Connected!\n');
+    console.log('  ✅ Connected!');
+    console.log(`  Credential secret from: ${secretSource === 'env' ? 'VERO_CREDENTIAL_SECRET' : '.vero-credential'}\n`);
 
     // Interactive CLI loop
     let running = true;
     while (running) {
       console.log('─── Menu ───────────────────────────────────────────────────────');
-      console.log('  1. Verify a credential');
-      console.log('  2. Read verification status');
+      console.log('  1. Verify a post  (prove the credential, mark the post verified)');
+      console.log('  2. Check a post   (is it verified on-chain?)');
       console.log('  3. Check wallet balance');
       console.log('  4. Exit\n');
 
@@ -179,28 +192,52 @@ async function main() {
 
       switch (choice.trim()) {
         case '1': {
-          console.log('\n  Submitting verification transaction (this may take 30-60 seconds)...');
+          const content = (await rl.question('\n  Post content (or URL): ')).trim();
+          if (!content) {
+            console.log('\n  ❌ Nothing to verify — empty input.\n');
+            break;
+          }
+          const postHash = hashPost(content);
+          console.log(`  Post hash: ${toHex(postHash)}`);
+          console.log('\n  Proving credential and submitting (this may take 30-60 seconds)...');
           try {
-            const tx = await deployed.callTx.verifyCredential();
-            console.log('\n  ✅ Credential verified');
+            // The credential secret never leaves this process: it enters the
+            // circuit through the witness, and only the post hash and the
+            // verified flag are written to the ledger.
+            const tx = await deployed.callTx.verifySource(postHash);
+            console.log('\n  ✅ Post verified — proof accepted');
             console.log(`  Transaction ID: ${tx.public.txId}`);
             console.log(`  Block height: ${tx.public.blockHeight}\n`);
           } catch (error) {
-            console.error('\n  ❌ Failed:', error instanceof Error ? error.message : error);
+            const msg = error instanceof Error ? error.message : String(error);
+            console.error('\n  ❌ Failed:', msg);
+            if (msg.includes('Credential does not match')) {
+              console.error('  The credential secret does not match the commitment this contract');
+              console.error('  was deployed with. Redeploy, or restore the original .vero-credential.\n');
+            }
           }
           break;
         }
         case '2': {
-          console.log('\n  Reading verification status from blockchain...');
+          const content = (await rl.question('\n  Post content (or URL) to check: ')).trim();
+          if (!content) {
+            console.log('\n  ❌ Nothing to check — empty input.\n');
+            break;
+          }
+          const postHash = hashPost(content);
+          console.log('\n  Reading ledger state from the chain...');
           try {
             const contractState = await providers.publicDataProvider.queryContractState(deployment.address);
-            if (contractState) {
-              const ledgerState = Vero.ledger(contractState.data);
-              const verified = ledgerState.verified;
-              console.log(`\n  📋 Verification status: ${verified}\n`);
-            } else {
-              console.log('\n  📋 No verification found (contract state empty)\n');
+            if (!contractState) {
+              console.log('\n  📋 Contract state empty — nothing deployed at this address?\n');
+              break;
             }
+            const ledgerState = Vero.ledger(contractState.data);
+            const isVerified = ledgerState.verifiedPosts.member(postHash);
+            console.log(`\n  Post hash:       ${toHex(postHash)}`);
+            console.log(`  📋 Verified:     ${isVerified ? 'YES — credentialed source' : 'no record'}`);
+            console.log(`  Posts on-chain:  ${ledgerState.verifiedPosts.size()}`);
+            console.log(`  Commitment:      ${toHex(ledgerState.acceptedCredentialCommitment)}\n`);
           } catch (error) {
             console.error('\n  ❌ Failed:', error instanceof Error ? error.message : error);
           }
