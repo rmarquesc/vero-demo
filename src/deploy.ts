@@ -123,12 +123,20 @@ const credentialSecret = credential.secret;
 const issuerType = encodeIssuerType(credential.issuerType);
 const expiry = BigInt(credential.expirySeconds);
 
-// The commitment binds secret, issuer type and expiry together, so none can
-// be swapped without invalidating the others.
+// The credential commitment binds secret, issuer type and expiry together, so
+// none can be swapped without invalidating the others. It is the leaf that
+// goes into the registry.
 const credentialCommitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
   credentialSecret,
   issuerType,
   expiry,
+);
+
+// The constructor now takes the registrar's authority, not a credential: the
+// contract accepts whatever the registrar registers, rather than one hardcoded
+// credential.
+const registrarCommitment: Uint8Array = Vero.pureCircuits.deriveRegistrarCommitment(
+  credential.registrarSecret,
 );
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
@@ -346,7 +354,8 @@ async function main() {
   }[credentialSource];
   console.log(`  Credential:  ${describeCredential(credential)}`);
   console.log(`  Source:      ${credentialOrigin}`);
-  console.log(`  Commitment:  ${toHex(credentialCommitment)}\n`);
+  console.log(`  Registrar:   ${toHex(registrarCommitment)}`);
+  console.log(`  Credential commitment (registry leaf): ${toHex(credentialCommitment)}\n`);
 
   if (credential.expirySeconds <= Math.floor(Date.now() / 1000)) {
     console.log('  ⚠ This credential is already expired. Deploying is fine — the commitment');
@@ -373,9 +382,9 @@ async function main() {
       // every later proof is checked against.
       deployed = await deployContract(providers, {
         compiledContract: compiledContract as any,
-        args: [credentialCommitment],
+        args: [registrarCommitment],
         privateStateId: PRIVATE_STATE_ID,
-        initialPrivateState: createPrivateState(credentialSecret),
+        initialPrivateState: createPrivateState(credentialSecret, credentialCommitment, credential.registrarSecret),
       });
       break;
     } catch (err: any) {
@@ -440,6 +449,21 @@ async function main() {
 
   recordDeployment(network, contractAddress, address.toString());
   console.log('  Saved to .midnight-state.json\n');
+
+  // Register the demo credential so a fresh clone has something to prove
+  // against. In a real deployment this is a separate act by the issuer; here
+  // the same machine plays registrar and subject.
+  console.log('─── Register demo credential ───────────────────────────────────\n');
+  console.log('  Submitting registerCredential (this may take 30-60 seconds)...');
+  try {
+    const tx = await (deployed as any).callTx.registerCredential(credentialCommitment);
+    console.log('  ✅ Credential registered in the Merkle registry');
+    console.log(`  Transaction ID: ${tx.public.txId}\n`);
+  } catch (err: any) {
+    console.error(`  ❌ registerCredential failed: ${err?.message ?? err}`);
+    console.error('     The contract is deployed, but the registry is empty — verifySource');
+    console.error('     will fail until a credential is registered.\n');
+  }
 
   await persistWalletState(network, walletCtx);
   await walletCtx.wallet.stop();

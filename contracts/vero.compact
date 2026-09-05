@@ -2,44 +2,37 @@ pragma language_version 0.23;
 
 import CompactStandardLibrary;
 
-// Commitment to the credential the demo issuer accepts. Binds the secret
-// together with the issuer type and the expiry, so none of the three can be
-// swapped independently of the others.
-export ledger acceptedCredentialCommitment: Bytes<32>;
+// Credentials the registry accepts, as a Merkle tree of credential
+// commitments. Membership proofs do not reveal which leaf is being proven, so
+// a source proves "one of the registered credentials is mine" without
+// revealing which issuer stands behind it.
+//
+// Plain MerkleTree rather than HistoricMerkleTree on purpose: historic roots
+// would keep accepting proofs against pre-revocation versions of the tree,
+// which defeats revocation. Paths are derived from current ledger state at
+// proof time, so insertions invalidating older paths costs nothing.
+export ledger credentialRegistry: MerkleTree<10, Bytes<32>>;
 
-// postHash -> issuerType. Storing the type rather than a bare flag is what
-// lets a reader see *what kind* of source verified the post, which is the
-// signal Vero is actually selling.
+// Who may register credentials. Stored as a commitment rather than a public
+// key because ownPublicKey() is prover-supplied and cannot gate authority.
+export ledger registrarCommitment: Bytes<32>;
+
+// postHash -> issuerType of the source that verified it.
 export ledger verifiedPosts: Map<Bytes<32>, Bytes<32>>;
 
-constructor(credentialCommitment: Bytes<32>) {
-  acceptedCredentialCommitment = disclose(credentialCommitment);
+constructor(registrar: Bytes<32>) {
+  registrarCommitment = disclose(registrar);
 }
 
+witness registrarSecret(): Bytes<32>;
 witness credentialSecret(): Bytes<32>;
+witness credentialPath(): MerkleTreePath<10, Bytes<32>>;
 
-export circuit verifySource(
-  postHash: Bytes<32>,
-  issuerType: Bytes<32>,
-  expiry: Uint<64>
-): [] {
-  const _credentialSecret = credentialSecret();
-
-  assert(
-    acceptedCredentialCommitment == deriveCredentialCommitment(_credentialSecret, issuerType, expiry),
-    "Credential does not match the accepted demo credential"
-  );
-
-  // blockTimeLessThan is a ledger operation: the bound it is given lands in
-  // the transaction's validity window and is therefore public. Circuit
-  // parameters are private by default in Compact, so disclosing the expiry
-  // here is a deliberate choice — the exact date becomes visible on-chain.
-  assert(
-    kernel.blockTimeLessThan(disclose(expiry)),
-    "Credential has expired"
-  );
-
-  verifiedPosts.insert(disclose(postHash), disclose(issuerType));
+export circuit deriveRegistrarCommitment(secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([
+    pad(32, "vero:registrar:v3"),
+    secret
+  ]);
 }
 
 export circuit deriveCredentialCommitment(
@@ -47,12 +40,46 @@ export circuit deriveCredentialCommitment(
   issuerType: Bytes<32>,
   expiry: Uint<64>
 ): Bytes<32> {
-  // Domain tag bumped to v2 alongside the shape change, so a commitment made
-  // for the single-secret v1 scheme can never satisfy this circuit.
   return persistentHash<[Bytes<32>, Bytes<32>, Bytes<32>, Uint<64>]>([
-    pad(32, "vero:credential:v2"),
+    pad(32, "vero:credential:v3"),
     secret,
     issuerType,
     expiry
   ]);
+}
+
+// The subject derives their own commitment off-chain and hands only that to
+// the registrar, so the credential secret never leaves the subject.
+export circuit registerCredential(commitment: Bytes<32>): [] {
+  assert(
+    registrarCommitment == deriveRegistrarCommitment(registrarSecret()),
+    "Caller is not the registrar"
+  );
+  credentialRegistry.insert(disclose(commitment));
+}
+
+export circuit verifySource(
+  postHash: Bytes<32>,
+  issuerType: Bytes<32>,
+  expiry: Uint<64>
+): [] {
+  const commitment = deriveCredentialCommitment(credentialSecret(), issuerType, expiry);
+  const path = credentialPath();
+
+  // Bind the path to *this* credential. The tree's contents are public, so
+  // without this a prover could supply a valid path for somebody else's leaf
+  // and satisfy checkRoot while knowing no secret at all.
+  assert(path.leaf == commitment, "Merkle path does not belong to this credential");
+
+  assert(
+    credentialRegistry.checkRoot(disclose(merkleTreePathRoot<10, Bytes<32>>(path))),
+    "Credential is not in the registry"
+  );
+
+  assert(
+    kernel.blockTimeLessThan(disclose(expiry)),
+    "Credential has expired"
+  );
+
+  verifiedPosts.insert(disclose(postHash), disclose(issuerType));
 }

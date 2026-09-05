@@ -77,6 +77,12 @@ const { credential } = loadOrCreateCredential();
 const credentialSecret = credential.secret;
 const issuerType = encodeIssuerType(credential.issuerType);
 const expiry = BigInt(credential.expirySeconds);
+// The path witness looks this leaf up in the on-chain registry.
+const credentialCommitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
+  credentialSecret,
+  issuerType,
+  expiry,
+);
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
 
@@ -185,7 +191,7 @@ async function main() {
       compiledContract: compiledContract as any,
       contractAddress: deployment.address,
       privateStateId: PRIVATE_STATE_ID,
-      initialPrivateState: createPrivateState(credentialSecret),
+      initialPrivateState: createPrivateState(credentialSecret, credentialCommitment, credential.registrarSecret),
     });
 
     console.log('  ✅ Connected!');
@@ -261,7 +267,7 @@ async function main() {
               console.log('  📋 Verified:     no record');
             }
             console.log(`  Posts on-chain:  ${ledgerState.verifiedPosts.size()}`);
-            console.log(`  Commitment:      ${toHex(ledgerState.acceptedCredentialCommitment)}\n`);
+            console.log(`  Registrar:       ${toHex(ledgerState.registrarCommitment)}\n`);
           } catch (error) {
             console.error('\n  ❌ Failed:', error instanceof Error ? error.message : error);
           }

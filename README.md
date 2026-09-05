@@ -17,36 +17,59 @@ npm run test:e2e
 `npm run setup` runs end-to-end with no prompts:
 
 1. `docker compose up -d --wait` — starts a local Midnight devnet (node, indexer, proof-server) and blocks until all three pass their healthchecks.
-2. `npm run compile` — compiles `contracts/vero.compact` to `contracts/managed/vero/`.
+2. `npm run compile` — compiles `contracts/vero.compact` to `contracts/managed/vero/` (two circuits: `registerCredential` and `verifySource`).
 3. `npm run deploy` — derives the genesis-seed wallet (NIGHT pre-minted), registers UTXOs for DUST generation, deploys the contract, writes `.midnight-state.json`.
 
 `npm run test:e2e` reconnects to the deployed contract, decodes its ledger as a Vero ledger, and checks the credential commitment is present. Exits 0 if the contract is live and indexable.
 
-## The credential
+## The credential registry
 
-`verifySource` proves three things at once: that the caller holds a secret
-whose commitment matches the one stored on-chain, that the credential has not
-expired, and — by recording it — what kind of issuer stands behind the post.
-
-The commitment binds all three fields together:
+The contract holds a Merkle tree of credential commitments. A source proves
+that **one of the registered credentials is theirs**, without revealing which —
+so the reader learns that an accredited journalist verified the post, not
+*which* accredited journalist, nor which newsroom credentialed them.
 
 ```
-commitment = persistentHash("vero:credential:v2", secret, issuerType, expiry)
+leaf = persistentHash("vero:credential:v3", secret, issuerType, expiry)
 ```
 
-So the secret alone is not a credential. Change the issuer type or the expiry
-and the commitment no longer matches, which is the point: a source cannot
-re-badge itself as a different kind of issuer, or quietly extend its own
-validity, while reusing the same secret.
+Three fields bound into one leaf: a source cannot re-badge itself as a
+different kind of issuer, or extend its own validity, while reusing a secret.
 
-### What is public and what is not
+### Who can register
 
-| Field | On-chain | Why |
-|---|---|---|
-| `secret` | never leaves the prover | it is the credential |
-| `issuerType` | public, stored per post | it *is* the trust signal a reader needs |
-| `expiry` | public | see below |
-| `postHash` | public | the thing being verified |
+`registerCredential` is gated on a registrar secret whose commitment is set at
+deploy time. It is deliberately **not** gated on `ownPublicKey()` — that value
+is prover-supplied and any caller can set it to anything, so it cannot carry
+authority. This is the manually-maintained allowlist stage: one registrar,
+adding credentials by hand.
+
+The subject derives their own commitment off-chain and hands over only that,
+so the credential secret never reaches the registrar.
+
+### Why a plain MerkleTree
+
+`HistoricMerkleTree` keeps older roots valid, which sounds useful until you
+want revocation: a proof against a pre-revocation root would still pass. The
+docs say as much — historic trees are "not suitable if items are frequently
+removed or replaced". Membership paths here are derived from current ledger
+state at proof time, so nothing is gained by keeping history, and revocation
+via `insertIndexDefault` stays possible.
+
+### The leaf-binding assert
+
+The tree's contents are public. Anyone can compute a valid Merkle path for
+somebody else's leaf, so `checkRoot` passing proves nothing on its own. What
+makes the circuit sound is:
+
+```compact
+assert(path.leaf == commitment, "Merkle path does not belong to this credential");
+```
+
+binding the path to the commitment derived from the prover's own secret.
+`npm run test:forgery` is the regression test: it supplies a genuine path for a
+registered leaf while holding an unregistered secret, and fails if that is
+accepted.
 
 ### Expiry is measured in seconds
 
@@ -58,37 +81,42 @@ milliseconds was accepted; the same instant in seconds was rejected with
 `failed assert: Credential has expired`. `loadOrCreateCredential` rejects any
 expiry past the year 2100 for this reason.
 
-### Why the expiry is public
+### What is public and what is not
 
-The expiry is public by necessity as much as by choice. `kernel.blockTimeLessThan`
-is a ledger operation: the bound it receives lands in the transaction's validity
-window, which is public either way. Compact's disclosure analysis refuses to
-compile the private version, with:
+| Field | On-chain | Why |
+|---|---|---|
+| `secret` | never leaves the prover | it is the credential |
+| which leaf | hidden | the point of the Merkle proof |
+| `issuerType` | public, stored per post | it *is* the trust signal a reader needs |
+| `expiry` | public | forced: see below |
+| `postHash` | public | the thing being verified |
+
+`kernel.blockTimeLessThan` is a ledger operation, so its bound lands in the
+transaction's validity window and is public either way. Compact's disclosure
+analysis refuses to compile the private version:
 
 > ledger operation might disclose the lower bound of the time being checked
 
-Note that circuit parameters are private by default in Compact — that is why
-even a "public" expiry needs an explicit `disclose()` in the source.
+Circuit parameters are private by default in Compact — that is why even an
+intentionally public expiry needs an explicit `disclose()`.
 
-A future version could disclose only a coarse bound (proving `validUntil <= expiry`
-privately, then checking block time against the coarse value), revealing
-"valid at least through March" instead of an exact date. That compiles; it is
-simply not what this version does.
+**A caveat worth knowing:** disclosing `issuerType` and an exact `expiry`
+narrows the anonymity set. With few registered credentials, that pair may
+identify the leaf even though the path does not. A coarse expiry bound (prove
+`validUntil <= expiry` privately, check block time against the coarse value)
+compiles and would widen it — the obvious next refinement.
 
-### Where it comes from
+### Where the credential comes from
 
-`.vero-credential` (JSON, mode `0600`, gitignored) holds all three fields, and
-must be identical at deploy time and at proof time. Resolution order:
+`.vero-credential` (JSON, mode `0600`, gitignored) holds the credential secret,
+issuer type, expiry and the registrar secret, and must be identical at deploy
+time and at proof time. Resolution order:
 
 1. `VERO_CREDENTIAL_SECRET`, `VERO_ISSUER_TYPE`, `VERO_CREDENTIAL_EXPIRY`
-   (the last in unix **seconds**) — environment wins per field, so CI can pin
-   an expiry without pinning a secret.
+   (unix **seconds**), `VERO_REGISTRAR_SECRET` — environment wins per field.
 2. `.vero-credential`.
-3. Freshly generated on first deploy: random secret, `journalist:accredited`,
-   one year of validity.
-
-Deleting the file after deploying means later proofs fail the commitment
-assertion. That is the contract working, not a bug — the CLI says so.
+3. Freshly generated on first deploy, then registered automatically so a fresh
+   clone has something to prove against.
 
 ## Local devnet
 

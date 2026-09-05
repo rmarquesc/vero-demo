@@ -17,7 +17,14 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { resolveNetwork, getOrCreateWallet, formatWalletBackupNotice, getDeployment } from '../src/network';
 import { createWallet, persistWalletState } from '../src/wallet';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
-import { loadOrCreateCredential, createPrivateState, witnesses, decodeIssuerType, toHex } from '../src/vero-credential';
+import {
+  loadOrCreateCredential,
+  createPrivateState,
+  witnesses,
+  encodeIssuerType,
+  decodeIssuerType,
+  toHex,
+} from '../src/vero-credential';
 
 // @ts-expect-error wallet sync requires WebSocket
 globalThis.WebSocket = WebSocket;
@@ -69,6 +76,11 @@ async function main() {
   );
   const { credential } = loadOrCreateCredential();
   const credentialSecret = credential.secret;
+  const credentialCommitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
+    credentialSecret,
+    encodeIssuerType(credential.issuerType),
+    BigInt(credential.expirySeconds),
+  );
 
   const walletCtx = await createWallet({ network, networkConfig, seed: SEED });
   await walletCtx.wallet.waitForSyncedState();
@@ -110,7 +122,7 @@ async function main() {
       contractAddress: deployment.address,
       compiledContract: compiledContract as any,
       privateStateId: PRIVATE_STATE_ID,
-      initialPrivateState: createPrivateState(credentialSecret),
+      initialPrivateState: createPrivateState(credentialSecret, credentialCommitment, credential.registrarSecret),
     });
   } catch (err: any) {
     await walletCtx.wallet.stop();
@@ -136,15 +148,25 @@ async function main() {
     await walletCtx.wallet.stop();
     fail(`on-chain state is not a Vero ledger: ${err?.message ?? err}`);
   }
-  if (!(ledgerState.acceptedCredentialCommitment?.length === 32)) {
+  if (!(ledgerState.registrarCommitment?.length === 32)) {
     await walletCtx.wallet.stop();
-    fail('acceptedCredentialCommitment missing or not 32 bytes');
+    fail('registrarCommitment missing or not 32 bytes');
+  }
+
+  // The registry has to actually contain this credential, otherwise
+  // verifySource cannot produce a membership path and the deployment is
+  // useless even though everything above passed.
+  const registryPath = ledgerState.credentialRegistry.findPathForLeaf(credentialCommitment);
+  if (!registryPath) {
+    await walletCtx.wallet.stop();
+    fail(`credential ${toHex(credentialCommitment)} is not in the on-chain registry`);
   }
 
   console.log(`✅ e2e-check passed`);
   console.log(`   contractAddress: ${deployment.address}`);
   console.log(`   network:         ${network}`);
-  console.log(`   commitment:      ${toHex(ledgerState.acceptedCredentialCommitment)}`);
+  console.log(`   registrar:       ${toHex(ledgerState.registrarCommitment)}`);
+  console.log(`   registry leaf:   ${toHex(credentialCommitment)} (present)`);
   console.log(`   verified posts:  ${ledgerState.verifiedPosts.size()}`);
 
   // Report which kinds of issuer are represented on-chain. A post recorded

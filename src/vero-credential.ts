@@ -39,6 +39,12 @@ export type VeroCredential = {
   readonly issuerType: string;
   /** Unix timestamp in SECONDS — see the note above. */
   readonly expirySeconds: number;
+  /**
+   * Authority to add credentials to the registry. Held by whoever runs the
+   * demo issuer; a real deployment would not keep this next to a subject's
+   * credential, but the demo plays both roles from one machine.
+   */
+  readonly registrarSecret: Uint8Array;
 };
 
 /**
@@ -59,21 +65,55 @@ function assertPlausibleExpiry(value: number, source: string): number {
   return value;
 }
 
-/** Private state the witness reads from. Only the secret is private input. */
+/**
+ * Private state behind the three witnesses. It carries the derived commitment
+ * as well as the secret, because credentialPath has to look the leaf up in the
+ * on-chain tree and the circuit's arguments are not visible to a witness.
+ */
 export type VeroPrivateState = {
   readonly credentialSecret: Uint8Array;
+  readonly credentialCommitment: Uint8Array;
+  readonly registrarSecret: Uint8Array;
 };
 
-export const createPrivateState = (credentialSecret: Uint8Array): VeroPrivateState => ({
-  credentialSecret,
-});
+export const createPrivateState = (
+  credentialSecret: Uint8Array,
+  credentialCommitment: Uint8Array,
+  registrarSecret: Uint8Array,
+): VeroPrivateState => ({ credentialSecret, credentialCommitment, registrarSecret });
 
-/** Implements `witness credentialSecret(): Bytes<32>`. */
+type MerklePath = { leaf: Uint8Array; path: { sibling: { field: bigint }; goes_left: boolean }[] };
+
+/**
+ * Implements the contract's three witnesses.
+ *
+ * credentialPath reads the live registry out of the witness context and
+ * derives the membership path from it, so the path is always against the
+ * current root — which is why the contract can use a plain MerkleTree instead
+ * of a HistoricMerkleTree.
+ */
 export const witnesses = {
   credentialSecret: ({ privateState }: { privateState: VeroPrivateState }): [VeroPrivateState, Uint8Array] => [
     privateState,
     privateState.credentialSecret,
   ],
+
+  registrarSecret: ({ privateState }: { privateState: VeroPrivateState }): [VeroPrivateState, Uint8Array] => [
+    privateState,
+    privateState.registrarSecret,
+  ],
+
+  credentialPath: ({ ledger, privateState }: { ledger: any; privateState: VeroPrivateState }): [VeroPrivateState, MerklePath] => {
+    const found = ledger.credentialRegistry.findPathForLeaf(privateState.credentialCommitment);
+    if (!found) {
+      throw new Error(
+        'This credential is not in the on-chain registry, so no membership path exists.\n' +
+          'Register it first (npm run register) — or, if it was registered under a different\n' +
+          'issuer type or expiry, those are bound into the commitment and produce a different leaf.',
+      );
+    }
+    return [privateState, found];
+  },
 };
 
 // ─── Encoding ──────────────────────────────────────────────────────────────────
@@ -139,6 +179,7 @@ function readFromFile(): VeroCredential | null {
     secret: parseHexSecret(parsed.secret ?? '', CREDENTIAL_FILE),
     issuerType: parsed.issuerType ?? DEFAULT_ISSUER_TYPE,
     expirySeconds: assertPlausibleExpiry(Number(parsed.expirySeconds), CREDENTIAL_FILE),
+    registrarSecret: parseHexSecret(parsed.registrarSecret ?? '', `${CREDENTIAL_FILE} (registrarSecret)`),
   };
 }
 
@@ -147,7 +188,10 @@ function writeToFile(credential: VeroCredential): void {
     secret: toHex(credential.secret),
     issuerType: credential.issuerType,
     expirySeconds: credential.expirySeconds,
-    _note: 'Demo credential. The on-chain commitment binds all three fields. Expiry is in SECONDS.',
+    registrarSecret: toHex(credential.registrarSecret),
+    _note:
+      'Demo credential and registrar authority. The credential commitment binds secret, ' +
+      'issuerType and expiry; expiry is in SECONDS.',
   };
   fs.writeFileSync(CREDENTIAL_FILE, JSON.stringify(body, null, 2) + '\n', { mode: 0o600 });
 }
@@ -172,8 +216,20 @@ export function loadOrCreateCredential(): { credential: VeroCredential; source: 
     const expirySeconds = envExpiry
       ? assertPlausibleExpiry(Number(envExpiry), 'VERO_CREDENTIAL_EXPIRY')
       : (fromFile?.expirySeconds ?? nowSeconds() + DEFAULT_VALIDITY_SECONDS);
+    const registrarSecret =
+      process.env.VERO_REGISTRAR_SECRET?.trim()
+        ? parseHexSecret(process.env.VERO_REGISTRAR_SECRET.trim(), 'VERO_REGISTRAR_SECRET')
+        : fromFile?.registrarSecret;
+    if (!registrarSecret) {
+      throw new Error('No registrar secret available — set VERO_REGISTRAR_SECRET or keep .vero-credential.');
+    }
     return {
-      credential: { secret, issuerType: envIssuer ?? fromFile?.issuerType ?? DEFAULT_ISSUER_TYPE, expirySeconds },
+      credential: {
+        secret,
+        issuerType: envIssuer ?? fromFile?.issuerType ?? DEFAULT_ISSUER_TYPE,
+        expirySeconds,
+        registrarSecret,
+      },
       source: 'env',
     };
   }
@@ -184,6 +240,7 @@ export function loadOrCreateCredential(): { credential: VeroCredential; source: 
     secret: Uint8Array.from(crypto.randomBytes(SECRET_BYTES)),
     issuerType: DEFAULT_ISSUER_TYPE,
     expirySeconds: nowSeconds() + DEFAULT_VALIDITY_SECONDS,
+    registrarSecret: Uint8Array.from(crypto.randomBytes(SECRET_BYTES)),
   };
   writeToFile(credential);
   return { credential, source: 'generated' };
