@@ -2,11 +2,9 @@ pragma language_version >= 0.23;
 
 import CompactStandardLibrary;
 
-// Public ledger state - visible on blockchain
-export ledger message: Opaque<"string">;
+export ledger verified: Boolean;
 
-// Circuit to store a message on the blockchain
-// The message will be publicly visible
-export circuit storeMessage(customMessage: Opaque<"string">): [] {
-    message = disclose(customMessage);
+export circuit verifyCredential(): [] {
+  const result: Boolean = true;
+  verified = disclose(result);
 }
