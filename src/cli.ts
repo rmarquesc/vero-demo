@@ -25,6 +25,7 @@ import {
   encodeIssuerType,
   decodeIssuerType,
   describeCredential,
+  warnIfUnbucketed,
   hashPost,
   toHex,
 } from './vero-credential';
@@ -196,6 +197,10 @@ async function main() {
 
     console.log('  ✅ Connected!');
     console.log(`  Credential: ${describeCredential(credential)}\n`);
+    {
+      const w = warnIfUnbucketed(credential);
+      if (w) console.log(w + '\\n');
+    }
 
     // Interactive CLI loop
     let running = true;

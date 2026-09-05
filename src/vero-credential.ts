@@ -34,6 +34,45 @@ const MAX_PLAUSIBLE_EXPIRY_SECONDS = 4_102_444_800; // 2100-01-01
 
 export const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 
+// ─── Expiry buckets ────────────────────────────────────────────────────────────
+//
+// verifySource discloses the expiry. If every credential carried its own exact
+// timestamp, that value would be a serial number: two posts verified by the
+// same credential would share it, so an observer could group all of a
+// pseudonymous source's posts together — undoing exactly the unlinkability the
+// Merkle membership proof is there to provide.
+//
+// Rounding every expiry to a shared quarter boundary collapses that. Every
+// credential issued in the same quarter discloses the same value, so the
+// anonymity set becomes the whole cohort rather than one.
+//
+// This is protection by convention, not by construction: nothing in the
+// contract stops a registrar issuing off-boundary expiries and recreating the
+// serial number. Removing the disclosure entirely needs the epoch design
+// (validity = membership in the current tree, deadline read from the ledger).
+
+/** Start of the first UTC quarter strictly after `afterSeconds`, or that instant if already a boundary. */
+export function nextQuarterBoundary(afterSeconds: number): number {
+  if (isQuarterBoundary(afterSeconds)) return afterSeconds;
+  const d = new Date(afterSeconds * 1000);
+  const quarter = Math.floor(d.getUTCMonth() / 3);
+  const year = quarter === 3 ? d.getUTCFullYear() + 1 : d.getUTCFullYear();
+  const month = quarter === 3 ? 0 : (quarter + 1) * 3;
+  return Math.floor(Date.UTC(year, month, 1, 0, 0, 0) / 1000);
+}
+
+export function isQuarterBoundary(seconds: number): boolean {
+  const d = new Date(seconds * 1000);
+  return (
+    d.getUTCMonth() % 3 === 0 &&
+    d.getUTCDate() === 1 &&
+    d.getUTCHours() === 0 &&
+    d.getUTCMinutes() === 0 &&
+    d.getUTCSeconds() === 0 &&
+    d.getUTCMilliseconds() === 0
+  );
+}
+
 export type VeroCredential = {
   readonly secret: Uint8Array;
   readonly issuerType: string;
@@ -239,7 +278,9 @@ export function loadOrCreateCredential(): { credential: VeroCredential; source: 
   const credential: VeroCredential = {
     secret: Uint8Array.from(crypto.randomBytes(SECRET_BYTES)),
     issuerType: DEFAULT_ISSUER_TYPE,
-    expirySeconds: nowSeconds() + DEFAULT_VALIDITY_SECONDS,
+    // Rounded up to a quarter boundary so this credential shares its disclosed
+    // expiry with every other credential issued this quarter.
+    expirySeconds: nextQuarterBoundary(nowSeconds() + DEFAULT_VALIDITY_SECONDS),
     registrarSecret: Uint8Array.from(crypto.randomBytes(SECRET_BYTES)),
   };
   writeToFile(credential);
@@ -251,4 +292,19 @@ export function describeCredential(c: VeroCredential): string {
   const when = new Date(c.expirySeconds * 1000).toISOString().replace('T', ' ').slice(0, 19);
   const state = c.expirySeconds > nowSeconds() ? 'valid until' : 'EXPIRED since';
   return `${c.issuerType} — ${state} ${when} UTC`;
+}
+
+/**
+ * Warns when an expiry sits off a quarter boundary, which makes it a
+ * distinguishing value and links every post that credential verifies.
+ * A warning rather than an error: the expiry tests deliberately use
+ * arbitrary instants.
+ */
+export function warnIfUnbucketed(c: VeroCredential): string | null {
+  if (isQuarterBoundary(c.expirySeconds)) return null;
+  return (
+    `⚠ Expiry ${new Date(c.expirySeconds * 1000).toISOString()} is not on a quarter boundary.\n` +
+    `  verifySource discloses it, so this credential is distinguishable from every other one\n` +
+    `  and all posts it verifies can be linked together. Fine for a test; not for a real issue.`
+  );
 }

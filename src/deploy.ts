@@ -25,6 +25,7 @@ import {
   witnesses,
   encodeIssuerType,
   describeCredential,
+  warnIfUnbucketed,
   toHex,
 } from './vero-credential';
 
@@ -355,6 +356,10 @@ async function main() {
   console.log(`  Credential:  ${describeCredential(credential)}`);
   console.log(`  Source:      ${credentialOrigin}`);
   console.log(`  Registrar:   ${toHex(registrarCommitment)}`);
+  {
+    const w = warnIfUnbucketed(credential);
+    if (w) console.log(w + '\\n');
+  }
   console.log(`  Credential commitment (registry leaf): ${toHex(credentialCommitment)}\n`);
 
   if (credential.expirySeconds <= Math.floor(Date.now() / 1000)) {

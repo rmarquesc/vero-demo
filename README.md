@@ -100,11 +100,29 @@ analysis refuses to compile the private version:
 Circuit parameters are private by default in Compact — that is why even an
 intentionally public expiry needs an explicit `disclose()`.
 
-**A caveat worth knowing:** disclosing `issuerType` and an exact `expiry`
-narrows the anonymity set. With few registered credentials, that pair may
-identify the leaf even though the path does not. A coarse expiry bound (prove
-`validUntil <= expiry` privately, check block time against the coarse value)
-compiles and would widen it — the obvious next refinement.
+### Expiries are rounded to quarter boundaries
+
+This matters more than it looks. `verifySource` discloses the expiry, so an
+exact per-credential timestamp would act as a **serial number**: two posts
+verified by the same credential would share it, letting an observer group all
+of a pseudonymous source's posts together — undoing precisely the
+unlinkability the Merkle proof exists to provide. And since
+`registerCredential` transactions are public and timestamped, an expiry of
+"registration + one year" points back at a specific registration the registrar
+can attribute.
+
+Credentials are therefore issued with the expiry rounded up to the next UTC
+quarter boundary, so everyone issued in the same quarter discloses the same
+value and the anonymity set is the whole cohort.
+
+This protects **by convention, not by construction** — nothing in the contract
+stops a registrar issuing off-boundary expiries and recreating the serial
+number. `warnIfUnbucketed` flags it at deploy and CLI startup; it cannot
+prevent it. Removing the disclosure altogether requires making validity mean
+"present in the current tree", with a shared deadline read from the ledger
+instead of carried per credential. That compiles — `blockTimeLessThan` against
+a ledger field needs no `disclose`, since the value is already public — and is
+the intended direction once the registry has real issuers.
 
 ### Where the credential comes from
 
