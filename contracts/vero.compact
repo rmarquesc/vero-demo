@@ -1,0 +1,28 @@
+pragma language_version 0.23;
+
+import CompactStandardLibrary;
+
+export ledger acceptedCredentialCommitment: Bytes<32>;
+export ledger verifiedPosts: Map<Bytes<32>, Boolean>;
+
+constructor(credentialCommitment: Bytes<32>) {
+  acceptedCredentialCommitment = disclose(credentialCommitment);
+}
+
+witness credentialSecret(): Bytes<32>;
+
+export circuit verifySource(postHash: Bytes<32>): [] {
+  const _credentialSecret = credentialSecret();
+  assert(
+    acceptedCredentialCommitment == deriveCredentialCommitment(_credentialSecret),
+    "Credential does not match the accepted demo credential"
+  );
+  verifiedPosts.insert(disclose(postHash), true);
+}
+
+export circuit deriveCredentialCommitment(secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([
+    pad(32, "vero:credential:v1"),
+    secret
+  ]);
+}

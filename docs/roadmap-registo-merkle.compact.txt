@@ -1,0 +1,133 @@
+// RASCUNHO / ESPECIFICACAO — NAO COMPILA
+//
+// Desenho da versao futura do Vero: registo Merkle de emissores confiaveis
+// em vez de uma credencial unica. Guardado como referencia para a Wave 2.
+//
+// Estado: pseudo-codigo. Usa sintaxe tipo Rust ([u8; 32]) e importa de
+// '@midnight-ntwrk/compact', que nao existe. O compilador rejeita a linha 6:
+//   parse error: found keyword "ledger" looking for an import element
+// Para o tornar real: Bytes<32> em vez de [u8; 32], import CompactStandardLibrary,
+// e reescrever os structs conforme a linguagem Compact 0.23.
+// -----------------------------------------------------------------------
+
+// contracts/verify.compact
+// Vero — Verifiable Credibility Layer
+// Compact contract for credential verification with selective disclosure
+// Built for Midnight Buildathon Wave 1
+
+import { ledger, state, circuit, disclose, MerkleProof, MerkleTree } from '@midnight-ntwrk/compact';
+
+// ──────────────────────────────────────────────────────────────
+// Types
+// ──────────────────────────────────────────────────────────────
+
+// Credential witness held privately by the publisher/source
+// All fields are private inputs to the circuit
+export struct CredentialWitness {
+  issuerPubKey: [u8; 32],      // Public key of the credential issuer
+  subject: [u8; 32],           // Hash of subject identity (or commitment)
+  expiry: u64,                 // Unix timestamp (seconds)
+  scope: [u8; 32],             // Hash of scope string (e.g., "journalist:ifj")
+  signature: [u8; 64],         // Issuer's signature over credential payload
+  merkleProof: MerkleProof,    // Proof that issuerPubKey is in the trusted registry
+  issuerType: [u8; 32],        // Type/category of issuer (e.g., "news-org", "professional-body")
+}
+
+// Public verification result returned to the frontend
+export struct VerificationResult {
+  verified: bool,
+  issuerType: [u8; 32],
+  scope: [u8; 32],
+  timestamp: u64,
+}
+
+// ──────────────────────────────────────────────────────────────
+// Ledger State
+// ──────────────────────────────────────────────────────────────
+
+export ledger Verifier {
+  // Root of trust: Merkle root of authorized issuer public keys
+  // In Wave 1: initialized at deploy, updatable via governance circuit
+  // In Wave 2+: managed by a multisig DAO of trusted registrars
+  state issuersRoot: [u8; 32]
+
+  // Optional: store verification records for frontend querying
+  // Key: postId (hash), Value: VerificationResult
+  state verifications: Map<[u8; 32], VerificationResult>
+
+  // ────────────────────────────────────────────────────────────
+  // Circuits
+  // ────────────────────────────────────────────────────────────
+
+  /// Main verification circuit
+  /// Checks: signature validity, expiry, scope match, issuer in registry
+  /// Discloses: verified=true, issuerType, scope (but NOT subject identity)
+  circuit verifyCredential(
+    private witness: CredentialWitness,
+    public requiredScope: [u8; 32],
+    public currentTime: u64,
+    public postId: [u8; 32]
+  ) -> VerificationResult {
+    // 1. Verify credential signature
+    // Payload signed by issuer: (subject, expiry, scope, issuerType)
+    let payload = concat(concat(witness.subject, witness.expiry), concat(witness.scope, witness.issuerType));
+    assert(verifySignature(witness.issuerPubKey, payload, witness.signature));
+
+    // 2. Check expiry (credential must not be expired)
+    assert(witness.expiry > currentTime);
+
+    // 3. Check scope matches what the verifier requires
+    assert(witness.scope == requiredScope);
+
+    // 4. Verify issuer is in the trusted registry (Merkle proof)
+    assert(MerkleTree.verify(witness.merkleProof, issuersRoot, witness.issuerPubKey));
+
+    // 5. Build result
+    let result = VerificationResult {
+      verified: true,
+      issuerType: witness.issuerType,
+      scope: witness.scope,
+      timestamp: currentTime,
+    };
+
+    // 6. Store on ledger for frontend queries
+    verifications.insert(postId, result);
+
+    // 7. Selective disclosure: reveal issuerType and scope, but NOT subject
+    disclose(result);
+
+    result
+  }
+
+  /// Governance: update the trusted issuers registry root
+  /// Wave 1: single admin (deployer) — replace with multisig in Wave 2
+  circuit updateIssuersRoot(newRoot: [u8; 32]) {
+    issuersRoot = newRoot
+  }
+
+  /// Helper: get verification result for a post (public query)
+  circuit getVerification(postId: [u8; 32]) -> VerificationResult {
+    verifications.get(postId).unwrap_or(VerificationResult {
+      verified: false,
+      issuerType: [0; 32],
+      scope: [0; 32],
+      timestamp: 0,
+    })
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// Helper Functions (pseudo-code — actual crypto via Midnight stdlib)
+// ──────────────────────────────────────────────────────────────
+
+/// Verify Ed25519 signature (provided by Midnight standard library)
+function verifySignature(pubKey: [u8; 32], message: [u8; *], sig: [u8; 64]) -> bool {
+  // Implemented in Midnight stdlib as `verify_ed25519`
+  // Returns true if signature is valid for message under pubKey
+  midnight_verify_ed25519(pubKey, message, sig)
+}
+
+/// Concatenate two byte arrays (stdlib)
+function concat<T, U>(a: [u8; T], b: [u8; U]) -> [u8; T + U] {
+  midnight_concat(a, b)
+}
