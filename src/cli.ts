@@ -25,7 +25,7 @@ globalThis.WebSocket = WebSocket;
 
 // Must match the privateStateId used at deploy time so the CLI reconnects to
 // the same private state. The hello-world contract has no witnesses (empty state).
-const PRIVATE_STATE_ID = 'veroPrivateStateV2';
+const PRIVATE_STATE_ID = 'helloWorldPrivateState';
 
 const { network, config: networkConfig } = resolveNetwork();
 const WALLET = getOrCreateWallet(network);
