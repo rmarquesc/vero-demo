@@ -2,8 +2,15 @@ pragma language_version 0.23;
 
 import CompactStandardLibrary;
 
+// Commitment to the credential the demo issuer accepts. Binds the secret
+// together with the issuer type and the expiry, so none of the three can be
+// swapped independently of the others.
 export ledger acceptedCredentialCommitment: Bytes<32>;
-export ledger verifiedPosts: Map<Bytes<32>, Boolean>;
+
+// postHash -> issuerType. Storing the type rather than a bare flag is what
+// lets a reader see *what kind* of source verified the post, which is the
+// signal Vero is actually selling.
+export ledger verifiedPosts: Map<Bytes<32>, Bytes<32>>;
 
 constructor(credentialCommitment: Bytes<32>) {
   acceptedCredentialCommitment = disclose(credentialCommitment);
@@ -11,18 +18,41 @@ constructor(credentialCommitment: Bytes<32>) {
 
 witness credentialSecret(): Bytes<32>;
 
-export circuit verifySource(postHash: Bytes<32>): [] {
+export circuit verifySource(
+  postHash: Bytes<32>,
+  issuerType: Bytes<32>,
+  expiry: Uint<64>
+): [] {
   const _credentialSecret = credentialSecret();
+
   assert(
-    acceptedCredentialCommitment == deriveCredentialCommitment(_credentialSecret),
+    acceptedCredentialCommitment == deriveCredentialCommitment(_credentialSecret, issuerType, expiry),
     "Credential does not match the accepted demo credential"
   );
-  verifiedPosts.insert(disclose(postHash), true);
+
+  // blockTimeLessThan is a ledger operation: the bound it is given lands in
+  // the transaction's validity window and is therefore public. Circuit
+  // parameters are private by default in Compact, so disclosing the expiry
+  // here is a deliberate choice — the exact date becomes visible on-chain.
+  assert(
+    kernel.blockTimeLessThan(disclose(expiry)),
+    "Credential has expired"
+  );
+
+  verifiedPosts.insert(disclose(postHash), disclose(issuerType));
 }
 
-export circuit deriveCredentialCommitment(secret: Bytes<32>): Bytes<32> {
-  return persistentHash<Vector<2, Bytes<32>>>([
-    pad(32, "vero:credential:v1"),
-    secret
+export circuit deriveCredentialCommitment(
+  secret: Bytes<32>,
+  issuerType: Bytes<32>,
+  expiry: Uint<64>
+): Bytes<32> {
+  // Domain tag bumped to v2 alongside the shape change, so a commitment made
+  // for the single-secret v1 scheme can never satisfy this circuit.
+  return persistentHash<[Bytes<32>, Bytes<32>, Bytes<32>, Uint<64>]>([
+    pad(32, "vero:credential:v2"),
+    secret,
+    issuerType,
+    expiry
   ]);
 }

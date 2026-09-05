@@ -18,7 +18,16 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { resolveNetwork, getOrCreateWallet, formatWalletBackupNotice, getDeployment } from './network';
 import { createWallet, persistWalletState, unshieldedToken, type WalletContext } from './wallet';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
-import { loadOrCreateCredentialSecret, createPrivateState, witnesses, hashPost, toHex } from './vero-credential';
+import {
+  loadOrCreateCredential,
+  createPrivateState,
+  witnesses,
+  encodeIssuerType,
+  decodeIssuerType,
+  describeCredential,
+  hashPost,
+  toHex,
+} from './vero-credential';
 
 // Enable WebSocket for GraphQL subscriptions
 // @ts-expect-error Required for wallet sync
@@ -61,10 +70,13 @@ const compiledContract = (CompiledContract.make('vero', Vero.Contract) as any).p
   (CompiledContract.withCompiledFileAssets as any)(zkConfigPath),
 );
 
-// Same secret the deploy used. If these diverge the circuit's commitment
-// assertion fails and every proof is rejected — which is the contract working
-// correctly, but looks like a bug, so surface the source explicitly below.
-const { secret: credentialSecret, source: secretSource } = loadOrCreateCredentialSecret();
+// Same credential the deploy used. If any of the three fields diverge the
+// commitment assertion fails and every proof is rejected — which is the
+// contract working correctly, but looks like a bug, so it is spelled out below.
+const { credential } = loadOrCreateCredential();
+const credentialSecret = credential.secret;
+const issuerType = encodeIssuerType(credential.issuerType);
+const expiry = BigInt(credential.expirySeconds);
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
 
@@ -177,7 +189,7 @@ async function main() {
     });
 
     console.log('  ✅ Connected!');
-    console.log(`  Credential secret from: ${secretSource === 'env' ? 'VERO_CREDENTIAL_SECRET' : '.vero-credential'}\n`);
+    console.log(`  Credential: ${describeCredential(credential)}\n`);
 
     // Interactive CLI loop
     let running = true;
@@ -204,7 +216,7 @@ async function main() {
             // The credential secret never leaves this process: it enters the
             // circuit through the witness, and only the post hash and the
             // verified flag are written to the ledger.
-            const tx = await deployed.callTx.verifySource(postHash);
+            const tx = await deployed.callTx.verifySource(postHash, issuerType, expiry);
             console.log('\n  ✅ Post verified — proof accepted');
             console.log(`  Transaction ID: ${tx.public.txId}`);
             console.log(`  Block height: ${tx.public.blockHeight}\n`);
@@ -212,8 +224,13 @@ async function main() {
             const msg = error instanceof Error ? error.message : String(error);
             console.error('\n  ❌ Failed:', msg);
             if (msg.includes('Credential does not match')) {
-              console.error('  The credential secret does not match the commitment this contract');
-              console.error('  was deployed with. Redeploy, or restore the original .vero-credential.\n');
+              console.error('  The credential does not match the commitment this contract was');
+              console.error('  deployed with. Secret, issuer type and expiry are all bound into it,');
+              console.error('  so any one of them differing is enough. Redeploy, or restore the');
+              console.error('  original .vero-credential.\n');
+            } else if (msg.includes('expired')) {
+              console.error(`  ${describeCredential(credential)}`);
+              console.error('  The contract rejected the proof on the expiry assert.\n');
             }
           }
           break;
@@ -235,7 +252,14 @@ async function main() {
             const ledgerState = Vero.ledger(contractState.data);
             const isVerified = ledgerState.verifiedPosts.member(postHash);
             console.log(`\n  Post hash:       ${toHex(postHash)}`);
-            console.log(`  📋 Verified:     ${isVerified ? 'YES — credentialed source' : 'no record'}`);
+            if (isVerified) {
+              // The issuer type is the actual product signal: not "someone
+              // verified this" but "a source of this kind verified this".
+              const kind = decodeIssuerType(ledgerState.verifiedPosts.lookup(postHash));
+              console.log(`  📋 Verified:     YES — ${kind}`);
+            } else {
+              console.log('  📋 Verified:     no record');
+            }
             console.log(`  Posts on-chain:  ${ledgerState.verifiedPosts.size()}`);
             console.log(`  Commitment:      ${toHex(ledgerState.acceptedCredentialCommitment)}\n`);
           } catch (error) {

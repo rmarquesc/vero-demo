@@ -17,7 +17,7 @@ import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config
 import { resolveNetwork, getOrCreateWallet, formatWalletBackupNotice, getDeployment } from '../src/network';
 import { createWallet, persistWalletState } from '../src/wallet';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
-import { loadOrCreateCredentialSecret, createPrivateState, witnesses, toHex } from '../src/vero-credential';
+import { loadOrCreateCredential, createPrivateState, witnesses, decodeIssuerType, toHex } from '../src/vero-credential';
 
 // @ts-expect-error wallet sync requires WebSocket
 globalThis.WebSocket = WebSocket;
@@ -67,7 +67,8 @@ async function main() {
     (CompiledContract.withWitnesses as any)(witnesses),
     (CompiledContract.withCompiledFileAssets as any)(zkConfigPath),
   );
-  const { secret: credentialSecret } = loadOrCreateCredentialSecret();
+  const { credential } = loadOrCreateCredential();
+  const credentialSecret = credential.secret;
 
   const walletCtx = await createWallet({ network, networkConfig, seed: SEED });
   await walletCtx.wallet.waitForSyncedState();
@@ -145,6 +146,18 @@ async function main() {
   console.log(`   network:         ${network}`);
   console.log(`   commitment:      ${toHex(ledgerState.acceptedCredentialCommitment)}`);
   console.log(`   verified posts:  ${ledgerState.verifiedPosts.size()}`);
+
+  // Report which kinds of issuer are represented on-chain. A post recorded
+  // with an empty issuer type would mean the encoding round-trip is broken,
+  // which a bare count would hide.
+  const issuerTypes = new Set<string>();
+  for (const [, issuerType] of ledgerState.verifiedPosts) {
+    issuerTypes.add(decodeIssuerType(issuerType));
+  }
+  if (issuerTypes.size > 0) {
+    console.log(`   issuer types:    ${[...issuerTypes].join(', ')}`);
+    if (issuerTypes.has('')) fail('a post is recorded with an empty issuer type');
+  }
 
   await walletCtx.wallet.stop();
   process.exit(0);

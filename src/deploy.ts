@@ -19,7 +19,14 @@ import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-p
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
-import { loadOrCreateCredentialSecret, createPrivateState, witnesses, toHex } from './vero-credential';
+import {
+  loadOrCreateCredential,
+  createPrivateState,
+  witnesses,
+  encodeIssuerType,
+  describeCredential,
+  toHex,
+} from './vero-credential';
 
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
@@ -111,8 +118,18 @@ const compiledContract = (CompiledContract.make('vero', Vero.Contract) as any).p
 // TypeScript would be a second implementation to keep in sync, and any drift
 // would only surface as an unexplained assertion failure at proof time.
 
-const { secret: credentialSecret, source: secretSource } = loadOrCreateCredentialSecret();
-const credentialCommitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(credentialSecret);
+const { credential, source: credentialSource } = loadOrCreateCredential();
+const credentialSecret = credential.secret;
+const issuerType = encodeIssuerType(credential.issuerType);
+const expiry = BigInt(credential.expirySeconds);
+
+// The commitment binds secret, issuer type and expiry together, so none can
+// be swapped without invalidating the others.
+const credentialCommitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
+  credentialSecret,
+  issuerType,
+  expiry,
+);
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
 
@@ -322,13 +339,19 @@ async function main() {
   await new Promise((r) => setTimeout(r, 6000));
   process.stdout.write(' done.\n');
 
-  const secretOrigin = {
-    env: 'VERO_CREDENTIAL_SECRET',
+  const credentialOrigin = {
+    env: 'environment',
     file: '.vero-credential',
     generated: '.vero-credential (newly generated)',
-  }[secretSource];
-  console.log(`  Credential secret: ${secretOrigin}`);
-  console.log(`  Commitment:        ${toHex(credentialCommitment)}\n`);
+  }[credentialSource];
+  console.log(`  Credential:  ${describeCredential(credential)}`);
+  console.log(`  Source:      ${credentialOrigin}`);
+  console.log(`  Commitment:  ${toHex(credentialCommitment)}\n`);
+
+  if (credential.expirySeconds <= Math.floor(Date.now() / 1000)) {
+    console.log('  ⚠ This credential is already expired. Deploying is fine — the commitment');
+    console.log('    does not care — but every verifySource call will fail the expiry assert.\n');
+  }
 
   console.log('  Deploying contract...\n');
 

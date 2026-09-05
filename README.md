@@ -22,22 +22,73 @@ npm run test:e2e
 
 `npm run test:e2e` reconnects to the deployed contract, decodes its ledger as a Vero ledger, and checks the credential commitment is present. Exits 0 if the contract is live and indexable.
 
-## The credential secret
+## The credential
 
-`verifySource` proves that the caller holds a secret whose commitment matches
-the one stored on-chain. That secret is the demo issuer's credential, and it
-must be identical at deploy time (which derives the commitment from it) and at
-proof time (which proves against it).
+`verifySource` proves three things at once: that the caller holds a secret
+whose commitment matches the one stored on-chain, that the credential has not
+expired, and — by recording it — what kind of issuer stands behind the post.
 
-It is resolved in this order:
+The commitment binds all three fields together:
 
-1. `VERO_CREDENTIAL_SECRET` — 64 hex characters, for CI or a shared demo.
-2. `.vero-credential` — written on first deploy, mode `0600`, gitignored.
-3. Freshly generated and written to that file.
+```
+commitment = persistentHash("vero:credential:v2", secret, issuerType, expiry)
+```
 
-Deleting `.vero-credential` after deploying means every later proof fails the
-commitment assertion. That is the contract behaving correctly, not a bug — the
-CLI says so explicitly when it happens. Redeploy to start over.
+So the secret alone is not a credential. Change the issuer type or the expiry
+and the commitment no longer matches, which is the point: a source cannot
+re-badge itself as a different kind of issuer, or quietly extend its own
+validity, while reusing the same secret.
+
+### What is public and what is not
+
+| Field | On-chain | Why |
+|---|---|---|
+| `secret` | never leaves the prover | it is the credential |
+| `issuerType` | public, stored per post | it *is* the trust signal a reader needs |
+| `expiry` | public | see below |
+| `postHash` | public | the thing being verified |
+
+### Expiry is measured in seconds
+
+Midnight's block time is in seconds, and this detail fails silently open. A
+millisecond timestamp (~1.8e12) is trivially greater than block time (~1.8e9),
+so `blockTimeLessThan` returns true forever and expired credentials are
+accepted with no error anywhere. Verified on the local devnet: a past expiry in
+milliseconds was accepted; the same instant in seconds was rejected with
+`failed assert: Credential has expired`. `loadOrCreateCredential` rejects any
+expiry past the year 2100 for this reason.
+
+### Why the expiry is public
+
+The expiry is public by necessity as much as by choice. `kernel.blockTimeLessThan`
+is a ledger operation: the bound it receives lands in the transaction's validity
+window, which is public either way. Compact's disclosure analysis refuses to
+compile the private version, with:
+
+> ledger operation might disclose the lower bound of the time being checked
+
+Note that circuit parameters are private by default in Compact — that is why
+even a "public" expiry needs an explicit `disclose()` in the source.
+
+A future version could disclose only a coarse bound (proving `validUntil <= expiry`
+privately, then checking block time against the coarse value), revealing
+"valid at least through March" instead of an exact date. That compiles; it is
+simply not what this version does.
+
+### Where it comes from
+
+`.vero-credential` (JSON, mode `0600`, gitignored) holds all three fields, and
+must be identical at deploy time and at proof time. Resolution order:
+
+1. `VERO_CREDENTIAL_SECRET`, `VERO_ISSUER_TYPE`, `VERO_CREDENTIAL_EXPIRY`
+   (the last in unix **seconds**) — environment wins per field, so CI can pin
+   an expiry without pinning a secret.
+2. `.vero-credential`.
+3. Freshly generated on first deploy: random secret, `journalist:accredited`,
+   one year of validity.
+
+Deleting the file after deploying means later proofs fail the commitment
+assertion. That is the contract working, not a bug — the CLI says so.
 
 ## Local devnet
 
