@@ -1,329 +1,189 @@
-# vero-demo
+# Vero
 
-A Midnight Network smart contract scaffolded with create-mn-app.
+**Credibility you can prove.**
 
-## Quick start
+Vero is a verifiable credibility layer for people and organisations publishing
+online, built on [Midnight](https://midnight.network). A source proves it holds
+a credential registered by a recognised issuer — accredited journalist,
+licensed professional, recognised outlet — and chooses how much of its identity
+to reveal. Readers get a trust signal backed by a proof rather than by an
+administrator's approval.
 
-Requirements: Node 22, Docker (with Compose v2), and the Compact compiler at the version pinned in `.compact-version` at the create-mn-app repo root (the version this project was scaffolded against).
+Built for the [Midnight Buildathon](https://akindo.io), Wave 1.
+Project site and build log: **[rmarquesc.github.io/vero-website](https://rmarquesc.github.io/vero-website/)**
 
-> **On Windows:** the npm scripts in this project run natively (PowerShell or cmd.exe), but the Compact compiler publishes no native Windows binary — so `npm run compile`, and `npm run setup` which calls it, need to run inside WSL. See Midnight's [installation docs](https://docs.midnight.network/getting-started/installation).
+Vero does not decide whether a post is true. It provides evidence about the
+source behind it.
 
-```bash
-npm install
-npm run setup
-npm run test:e2e
-```
+---
 
-`npm run setup` runs end-to-end with no prompts:
+## What the contract proves today
 
-1. `docker compose up -d --wait` — starts a local Midnight devnet (node, indexer, proof-server) and blocks until all three pass their healthchecks.
-2. `npm run compile` — compiles `contracts/vero.compact` to `contracts/managed/vero/` (two circuits: `registerCredential` and `verifySource`).
-3. `npm run deploy` — derives the genesis-seed wallet (NIGHT pre-minted), registers UTXOs for DUST generation, deploys the contract, writes `.midnight-state.json`.
-
-`npm run test:e2e` reconnects to the deployed contract, decodes its ledger as a Vero ledger, and checks the credential commitment is present. Exits 0 if the contract is live and indexable.
-
-## The credential registry
-
-The contract holds a Merkle tree of credential commitments. A source proves
-that **one of the registered credentials is theirs**, without revealing which —
-so the reader learns that an accredited journalist verified the post, not
-*which* accredited journalist, nor which newsroom credentialed them.
+`contracts/vero.compact` holds a Merkle tree of credential commitments. A leaf
+is the hash of three things bound together:
 
 ```
 leaf = persistentHash("vero:credential:v3", secret, issuerType, expiry)
 ```
 
-Three fields bound into one leaf: a source cannot re-badge itself as a
-different kind of issuer, or extend its own validity, while reusing a secret.
+Calling `verifySource(postHash, issuerType, expiry)` proves, in one circuit,
+that:
 
-### Who can register
+1. the caller knows a `secret` whose commitment is **a leaf in the registry** —
+   without revealing which leaf, so the reader learns that an accredited
+   journalist verified the post, not *which* journalist nor which newsroom
+   credentialed them;
+2. the credential **has not expired**, checked against Midnight's block time;
+3. the issuer type recorded against the post is the one bound into that
+   credential — a source cannot re-badge itself while reusing a secret.
 
-`registerCredential` is gated on a registrar secret whose commitment is set at
-deploy time. It is deliberately **not** gated on `ownPublicKey()` — that value
-is prover-supplied and any caller can set it to anything, so it cannot carry
-authority. This is the manually-maintained allowlist stage: one registrar,
-adding credentials by hand.
+The secret never leaves the prover. What reaches the ledger is the post hash
+and the issuer type.
 
-The subject derives their own commitment off-chain and hands over only that,
-so the credential secret never reaches the registrar.
+### The line that makes it sound
 
-### Why a plain MerkleTree
-
-`HistoricMerkleTree` keeps older roots valid, which sounds useful until you
-want revocation: a proof against a pre-revocation root would still pass. The
-docs say as much — historic trees are "not suitable if items are frequently
-removed or replaced". Membership paths here are derived from current ledger
-state at proof time, so nothing is gained by keeping history, and revocation
-via `insertIndexDefault` stays possible.
-
-### The leaf-binding assert
-
-The tree's contents are public. Anyone can compute a valid Merkle path for
-somebody else's leaf, so `checkRoot` passing proves nothing on its own. What
-makes the circuit sound is:
+The registry's leaves are public, so anyone can compute a valid Merkle path for
+somebody else's credential. `checkRoot` passing therefore proves nothing on its
+own. What closes the hole:
 
 ```compact
 assert(path.leaf == commitment, "Merkle path does not belong to this credential");
 ```
 
 binding the path to the commitment derived from the prover's own secret.
-`npm run test:forgery` is the regression test: it supplies a genuine path for a
-registered leaf while holding an unregistered secret, and fails if that is
-accepted.
+`npm run test:forgery` is the regression test for exactly this: it holds an
+unregistered secret while supplying a genuine path to a registered leaf, and
+fails if that is ever accepted.
 
-### Expiry is measured in seconds
+### Who can register
 
-Midnight's block time is in seconds, and this detail fails silently open. A
-millisecond timestamp (~1.8e12) is trivially greater than block time (~1.8e9),
-so `blockTimeLessThan` returns true forever and expired credentials are
-accepted with no error anywhere. Verified on the local devnet: a past expiry in
-milliseconds was accepted; the same instant in seconds was rejected with
-`failed assert: Credential has expired`. `loadOrCreateCredential` rejects any
-expiry past the year 2100 for this reason.
+`registerCredential` is gated on a registrar secret whose commitment is set at
+deploy time. It is deliberately **not** gated on `ownPublicKey()` — that value
+is supplied by the prover and any caller can set it to anything, so it cannot
+carry authority.
 
-### What is public and what is not
+The subject derives its own commitment off-chain and hands over only that, so
+the credential secret never reaches the registrar.
 
-| Field | On-chain | Why |
-|---|---|---|
-| `secret` | never leaves the prover | it is the credential |
-| which leaf | hidden | the point of the Merkle proof |
-| `issuerType` | public, stored per post | it *is* the trust signal a reader needs |
-| `expiry` | public | forced: see below |
-| `postHash` | public | the thing being verified |
+---
 
-`kernel.blockTimeLessThan` is a ledger operation, so its bound lands in the
-transaction's validity window and is public either way. Compact's disclosure
-analysis refuses to compile the private version:
+## Quick start
 
-> ledger operation might disclose the lower bound of the time being checked
-
-Circuit parameters are private by default in Compact — that is why even an
-intentionally public expiry needs an explicit `disclose()`.
-
-### Expiries are rounded to quarter boundaries
-
-This matters more than it looks. `verifySource` discloses the expiry, so an
-exact per-credential timestamp would act as a **serial number**: two posts
-verified by the same credential would share it, letting an observer group all
-of a pseudonymous source's posts together — undoing precisely the
-unlinkability the Merkle proof exists to provide. And since
-`registerCredential` transactions are public and timestamped, an expiry of
-"registration + one year" points back at a specific registration the registrar
-can attribute.
-
-Credentials are therefore issued with the expiry rounded up to the next UTC
-quarter boundary, so everyone issued in the same quarter discloses the same
-value and the anonymity set is the whole cohort.
-
-This protects **by convention, not by construction** — nothing in the contract
-stops a registrar issuing off-boundary expiries and recreating the serial
-number. `warnIfUnbucketed` flags it at deploy and CLI startup; it cannot
-prevent it. Removing the disclosure altogether requires making validity mean
-"present in the current tree", with a shared deadline read from the ledger
-instead of carried per credential. That compiles — `blockTimeLessThan` against
-a ledger field needs no `disclose`, since the value is already public — and is
-the intended direction once the registry has real issuers.
-
-### Where the credential comes from
-
-`.vero-credential` (JSON, mode `0600`, gitignored) holds the credential secret,
-issuer type, expiry and the registrar secret, and must be identical at deploy
-time and at proof time. Resolution order:
-
-1. `VERO_CREDENTIAL_SECRET`, `VERO_ISSUER_TYPE`, `VERO_CREDENTIAL_EXPIRY`
-   (unix **seconds**), `VERO_REGISTRAR_SECRET` — environment wins per field.
-2. `.vero-credential`.
-3. Freshly generated on first deploy, then registered automatically so a fresh
-   clone has something to prove against.
-
-## Local devnet
-
-The project ships its own devnet via `docker-compose.yml`:
-
-| Service        | Port | Purpose                                         |
-| -------------- | ---- | ----------------------------------------------- |
-| `node`         | 9944 | Midnight node, `dev` chain preset               |
-| `indexer`      | 8088 | GraphQL indexer for chain state                 |
-| `proof-server` | 6300 | Generates ZK proofs for contract transactions   |
-
-State lives in container-managed volumes. Tear everything down with:
+Requirements: Node 22, Docker with Compose v2, and the Compact compiler.
 
 ```bash
-docker compose down -v
+npm install
+npm run setup      # devnet up, compile, deploy, register the demo credential
+npm run test:e2e   # reconnect, read the ledger back
+npm run cli        # verify a post, then check it
 ```
 
-That removes all containers, networks, and volumes. The next `npm run setup` starts from a clean slate.
+`npm run setup` runs without prompts: it brings up a local Midnight devnet
+(node, indexer, proof server), compiles the contract, derives the genesis-seed
+wallet, deploys, and registers a freshly generated demo credential so there is
+something to prove against.
 
-## ⚠️ LOCAL DEVNET ONLY
-
-The deploy script uses a well-known genesis seed (`0000…0001`) so the
-pre-minted NIGHT in the `dev` chain preset is immediately available. **Do
-not use this seed against Preprod, mainnet, or any environment that
-handles real value** — anyone running this devnet has full access to
-funds at this seed.
-
-## Networks
-
-This DApp supports three networks:
-
-| Network | When to use | Default? |
-|---|---|---|
-| `undeployed` | Local devnet bundled in `docker-compose.yml`. Genesis seed is hardcoded; no funding needed. | yes |
-| `preview` | Public preview testnet. Faucet at `https://midnight-tmnight-preview.nethermind.dev`. |  |
-| `preprod` | Public preprod testnet. Faucet at `https://midnight-tmnight-preprod.nethermind.dev`. |  |
-
-The active network is **sticky**: whichever network you last interacted
-with stays active until you switch. Any command run with `--network <name>`
-also sets that network active for subsequent commands. The default on a
-fresh project is `undeployed` (local devnet).
-
-```sh
-npm run setup -- --network preview   # runs on preview AND makes it active
-npm run cli                          # still uses preview
-npm run check-balance                # still uses preview
-```
-
-You can also switch without running anything else:
-
-```sh
-npm run network preview         # active network is now preview
-npm run network                 # prints current active network
-npm run network undeployed      # switch back to local devnet
-```
-
-### How wallets work across networks
-
-- `undeployed` uses a hardcoded genesis seed. Local devnet pre-funds it.
-- `preview` and `preprod` generate a fresh wallet on first use: a 24-word
-  BIP-39 recovery phrase (printed once) plus its derived seed, both stored
-  in `.midnight-state.json` (gitignored). The wallet survives switching
-  networks — switch back later and your funded wallet returns.
-- **Back up your recovery phrase** if you fund a public-network wallet you
-  care about. It is printed when the wallet is created and kept in
-  `.midnight-state.json` under `wallets.<network>.mnemonic`. Anyone holding
-  the phrase controls the wallet.
-- Wallets created before mnemonic support keep working from their stored
-  `seed`; they just have no phrase to import into Lace.
-
-### Using the same wallet as Lace
-
-Seeds are derived with the standard BIP-39 `mnemonicToSeed` step — the same
-convention Lace uses — so identity is portable in both directions:
-
-- **Bring your Lace wallet here**: pass your recovery phrase via the
-  `MIDNIGHT_WALLET_MNEMONIC` env var — the derived addresses match Lace.
-  To keep the phrase out of your shell history, enter it with a hidden
-  prompt instead of typing it inline:
-
-  ```bash
-  read -s MIDNIGHT_WALLET_MNEMONIC && export MIDNIGHT_WALLET_MNEMONIC
-  npm run deploy
-  ```
-- **Take a scaffold wallet to Lace**: restore Lace from the 24-word phrase
-  in `.midnight-state.json`.
-
-### Funding a public-network wallet
-
-On the first run with `--network preview` (or `preprod`):
-
-1. `setup` will print your wallet address and the faucet URL.
-2. Open the faucet URL, paste the address, request tNIGHT.
-3. `setup` polls the wallet balance every 10 s and continues automatically
-   once funds arrive.
-4. The default poll budget is 10 minutes. Override with
-   `MIDNIGHT_FAUCET_TIMEOUT_MS=1800000` (30 min) for unattended runs.
-
-If the faucet is slow or the script times out, your seed is preserved.
-Re-run `npm run setup -- --network preview` once the funds land.
-
-### Environment overrides
-
-These env vars override the active network's config (no per-network
-suffix — they apply to whichever network is active for the run):
-
-| Variable | Effect |
+| Script | What it does |
 |---|---|
-| `MIDNIGHT_WALLET_SEED` | Use this hex seed (32-128 hex chars; a Lace-compatible BIP-39 seed is 128) instead of generating/persisting one. Useful for CI with a pre-funded wallet. |
-| `MIDNIGHT_WALLET_MNEMONIC` | Use this BIP-39 recovery phrase instead of generating a wallet — e.g. your Lace phrase, for the same addresses as Lace. Not persisted. Set only one of seed/mnemonic. |
-| `MIDNIGHT_INDEXER_URL` | Override the indexer GraphQL URL. |
-| `MIDNIGHT_INDEXER_WS_URL` | Override the indexer WS URL. |
-| `MIDNIGHT_NODE_URL` | Override the node RPC URL. |
-| `MIDNIGHT_FAUCET_URL` | Override the faucet URL printed during setup. |
-| `MIDNIGHT_PROOF_SERVER_URL` | Override the proof server URL — set to a public proof server (e.g. `https://lace-proof-pub.preview.midnight.network`) to skip running one locally. |
-| `MIDNIGHT_FAUCET_TIMEOUT_MS` | Faucet poll budget in milliseconds (default 600000 = 10 min). |
+| `npm run compile` | Compile `contracts/vero.compact` |
+| `npm run setup` | Devnet + compile + deploy + register, end to end |
+| `npm run cli` | Interactive: verify a post, check a post, check balance |
+| `npm run test:e2e` | Reconnect, decode the ledger, assert the credential is registered |
+| `npm run test:forgery` | Security regression on the leaf-binding assert |
+| `npm run check-balance` | NIGHT / DUST balance |
+| `npm run clean` | Remove build artefacts and local state |
 
-By default all networks use the **local** proof server. Public proof
-servers exist (see the env override above) but the local default keeps
-your witness data on your machine and avoids depending on a remote
-service for the deploy hot path.
+### The credential
 
-### Switching back to local devnet
+`.vero-credential` (JSON, mode `0600`, gitignored) holds the credential secret,
+issuer type, expiry and the registrar secret. It must be identical at deploy
+time and at proof time — all four fields feed the commitment. Environment
+overrides: `VERO_CREDENTIAL_SECRET`, `VERO_ISSUER_TYPE`,
+`VERO_CREDENTIAL_EXPIRY` (unix **seconds**), `VERO_REGISTRAR_SECRET`.
 
-```sh
-npm run network undeployed     # or: npm run setup -- --network undeployed
-```
+Two details worth knowing before changing anything here:
 
-Your preview/preprod wallet seeds and deploy addresses stay in
-`.midnight-state.json`. Switch back later, and they're still there.
+**Expiry is in seconds, and getting it wrong fails silently open.** Block time
+is around `1.8e9`; a millisecond timestamp is around `1.8e12`, so
+`blockTimeLessThan` returns true forever and expired credentials sail through
+with no error anywhere. Credential loading rejects any expiry past the year
+2100 for this reason.
 
-### Wallet sync cache
+**Expiries are rounded up to a quarter boundary.** Verification discloses the
+expiry, and an exact per-credential timestamp behaves like a serial number —
+two posts verified by the same credential would share it, letting an observer
+group a pseudonymous source's posts without ever identifying them. Rounding
+makes the whole quarter's cohort indistinguishable.
 
-After each `deploy`, `cli`, or `check-balance` run, the scripts serialize the
-wallet's synced state to `.midnight-wallet-state/<network>/` (gitignored).
-The next run on the same network restores from that snapshot and only catches
-up to the latest block instead of replaying from genesis — meaningful on
-`preview` / `preprod` where a from-seed sync takes minutes.
+---
 
-If the cache is stale or corrupt (e.g. after an SDK upgrade with an
-incompatible state format) the wallet falls back to a fresh from-seed sync
-with a one-line warning. `npm run clean` removes the cache along with other
-generated state.
+## What is verified, and what is not
 
-## Available scripts
+Everything below marked *observed* was watched running against the local
+devnet. Nothing has been exercised on a public network.
 
-| Script                  | Description                                                    |
-| ----------------------- | -------------------------------------------------------------- |
-| `npm run setup`         | One-shot: start devnet, compile, deploy.                       |
-| `npm run compile`       | Compile the Compact contract.                                  |
-| `npm run deploy`        | Deploy the compiled contract (requires devnet up + compiled).  |
-| `npm run cli`           | Interactive CLI to call circuits on the deployed contract.     |
-| `npm run check-balance` | Print the genesis-seed wallet's NIGHT and DUST balances.       |
-| `npm run test:e2e`      | Smoke + read-back check against the deployed contract.         |
-| `npm run clean`         | Remove `contracts/managed/`, `.midnight-state.json`, and `.midnight-wallet-state/`. |
-| `npm run proof-server:start` / `:stop` | Compose lifecycle for just the proof-server service. |
+| Behaviour | Status |
+|---|---|
+| Deploy, credential registration, membership proof accepted | observed |
+| Expired credential refused on the expiry assert | observed |
+| Merkle path for a foreign leaf refused | observed |
+| Issuer type read back from the ledger | observed |
+| Fresh clone runs from scratch | observed |
+| Behaviour on `preview` / `preprod` | **untested** |
+| Credential revocation | not implemented |
+| Multiple registrars, issuer governance | out of scope for Wave 1 |
+
+### Honest limitations
+
+- **The registrar is the trust anchor.** Vero proves that a credential was
+  registered. It does not prove the registrar checked anything before
+  registering it. `issuerType` is a label the registrar asserts.
+- **The disclosed expiry narrows the anonymity set** to everyone credentialed
+  in the same quarter with the same issuer type. Removing the disclosure
+  entirely means making validity mean "present in the current tree", with a
+  shared deadline read from the ledger — that compiles, and is the intended
+  direction once the registry has real issuers.
+- **Scope is not implemented.** The circuit checks registry membership and
+  expiry, nothing finer.
+
+---
 
 ## Project structure
 
 ```
-vero-demo/
-├── contracts/
-│   ├── vero.compact            # Compact source — the credential circuit
-│   └── hello-world.compact     # original create-mn-app scaffold, kept for reference
-├── scripts/
-│   └── e2e-check.ts            # smoke + read-back
-├── src/
-│   ├── network.ts              # network selection + state file management
-│   ├── wallet.ts               # wallet construction + sync-state cache
-│   ├── setup.ts                # orchestrator for `npm run setup`
-│   ├── deploy.ts               # deploy the contract
-│   ├── cli.ts                  # interact with deployed contract
-│   ├── vero-credential.ts      # credential secret, private state, witness
-│   └── check-balance.ts        # NIGHT / DUST balance
-├── docker-compose.yml          # node + indexer + proof-server
-├── .vero-credential            # demo credential secret (gitignored)
-├── .midnight-state.json        # written by deploy (gitignored)
-├── .midnight-wallet-state/     # serialized sync state per network (gitignored)
-├── package.json
-└── tsconfig.json
+contracts/
+  vero.compact              the credential circuit
+  hello-world.compact       create-mn-app scaffold, kept for reference
+docs/
+  wave3-issuer-keys-draft.txt   fuller design: issuer keys, scope, signatures
+                                (specification — does not compile)
+scripts/
+  e2e-check.ts              smoke test + ledger read-back
+  forgery-check.ts          security regression on the leaf binding
+src/
+  vero-credential.ts        credential material, private state, witnesses
+  deploy.ts                 deploy and register
+  cli.ts                    interactive verification
+  network.ts                network selection and state
+  wallet.ts                 wallet construction and sync cache
+docker-compose.yml          node + indexer + proof server
 ```
 
-## Compact compiler version
+## Why Midnight
 
-`.compact-version` at the create-mn-app repo root pinned the compiler
-version this project was scaffolded against. To upgrade your local
-compiler to that version:
+Selective disclosure is the primitive this problem needs: prove that a
+publisher is credentialed without exposing the credential. Compact puts that
+behind TypeScript-like contract code, which matters for a project built by a
+design-led author rather than a cryptography team. The dual-ledger model keeps
+the private witness local while anchoring only the verified outcome.
 
-```bash
-compact update <version>
-compact use <version>
-```
+## Team
+
+Built solo by **Rafaela Costa** — strategic UX/UI designer and product builder.
+Non-cryptography background; the Compact implementation was developed with
+AI-assisted tooling (Midnight Expert, Claude Code) and community guidance via
+the Midnight Discord.
+
+## License
+
+Apache License 2.0 — see [LICENSE](./LICENSE).
