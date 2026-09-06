@@ -18,7 +18,8 @@
     "clean": "node scripts/clean.mjs",
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:e2e": "tsx scripts/e2e-check.ts",
-    "test:forgery": "tsx scripts/forgery-check.ts"
+    "test:forgery": "tsx scripts/forgery-check.ts",
+    "address": "npx tsx scripts/print-address.ts"
   },
   "dependencies": {
     "@midnight-ntwrk/compact-runtime": "0.16.0",
@@ -53,5 +54,9 @@
   ],
   "overrides": {
     "@midnight-ntwrk/onchain-runtime-v3": "3.0.0"
-  }
+  },
+  "private": true,
+  "workspaces": [
+    "ui"
+  ]
 }

@@ -1,0 +1,236 @@
+/* Vero demo surface — palette and type taken from the project site so the
+   demo and the pitch read as one thing. */
+
+:root {
+  --void: #020308;
+  --panel: #0a0c13;
+  --panel-lift: #0e1119;
+  --line: rgba(255, 255, 255, 0.09);
+  --line-mid: rgba(255, 255, 255, 0.16);
+
+  --text: #e9ebf2;
+  --text-dim: #9098ac;
+  --text-faint: #5a6176;
+  --text-ghost: #363c4b;
+
+  --cyan: #33e6e3;
+  --violet: #9b7bff;
+  --amber: #ffc46b;
+
+  --serif: "Newsreader", Georgia, serif;
+  --sans: "IBM Plex Sans", -apple-system, system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--void);
+  color: var(--text);
+  font-family: var(--sans);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 55% 34% at 72% 6%, rgba(75, 45, 160, 0.16), transparent 72%),
+    radial-gradient(ellipse 42% 28% at 8% 78%, rgba(28, 157, 166, 0.07), transparent 75%);
+}
+
+main { position: relative; z-index: 1; }
+
+a { color: inherit; }
+
+.wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ── Header ─────────────────────────────────────────────── */
+
+.masthead {
+  border-bottom: 1px solid var(--line);
+  padding: 48px 0 26px;
+}
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 18px;
+}
+.eyebrow .pip {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--violet);
+  box-shadow: 0 0 8px 1px rgba(155, 123, 255, 0.7);
+}
+
+h1 {
+  font-family: var(--sans);
+  font-size: clamp(1.9rem, 5vw, 2.6rem);
+  font-weight: 400;
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+  margin: 0 0 14px;
+}
+h1 em {
+  font-style: normal;
+  background: linear-gradient(100deg, #f9f8f9 5%, #8d94ff 45%, #33e6e3 94%);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
+
+.sub {
+  color: var(--text-dim);
+  font-size: 0.98rem;
+  margin: 0;
+  max-width: 56ch;
+}
+
+/* ── Ledger strip ───────────────────────────────────────── */
+
+.ledger-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+  margin-top: 26px;
+  padding: 13px 16px;
+  border: 1px solid var(--line);
+  background: rgba(5, 7, 14, 0.5);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+.ledger-strip b { color: var(--text); font-weight: 400; }
+.ledger-strip .live { color: var(--cyan); display: inline-flex; align-items: center; gap: 7px; }
+.ledger-strip .live::before {
+  content: ""; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--cyan); box-shadow: 0 0 8px 1px rgba(51, 230, 227, 0.7);
+}
+.ledger-strip.down { border-color: rgba(255, 196, 107, 0.3); }
+.ledger-strip.down .live { color: var(--amber); }
+.ledger-strip.down .live::before { background: var(--amber); box-shadow: none; }
+
+/* ── Feed ───────────────────────────────────────────────── */
+
+.feed-label {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-ghost);
+  margin: 44px 0 0;
+}
+
+.post {
+  border-top: 1px solid var(--line);
+  padding: 26px 0;
+}
+.post:last-child { border-bottom: 1px solid var(--line); }
+
+.post-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 13px;
+}
+.avatar {
+  width: 34px; height: 34px; flex: none;
+  border: 1px solid var(--line-mid);
+  background-image: repeating-linear-gradient(-45deg, rgba(255,255,255,0.09) 0 1px, transparent 1px 5px);
+}
+.who { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.name { font-size: 0.95rem; font-weight: 500; }
+.handle { font-family: var(--mono); font-size: 0.74rem; color: var(--text-faint); }
+
+.post-body {
+  font-family: var(--serif);
+  font-size: 1.12rem;
+  line-height: 1.5;
+  color: var(--text);
+  margin: 0 0 16px;
+}
+
+/* ── The badge — the whole product, visually ────────────── */
+
+.seal {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 6px 13px;
+  color: var(--cyan);
+  border: 1px solid rgba(51, 230, 227, 0.55);
+  background: rgba(51, 230, 227, 0.07);
+  box-shadow: 0 0 20px rgba(51, 230, 227, 0.15);
+}
+.seal .tick { font-size: 0.78rem; }
+.seal .kind {
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+  text-transform: none;
+  border-left: 1px solid rgba(51, 230, 227, 0.3);
+  padding-left: 9px;
+}
+
+.unsealed {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  padding: 6px 13px;
+  color: var(--text-faint);
+  border: 1px dashed var(--line-mid);
+}
+
+.post-meta {
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  color: var(--text-ghost);
+  margin-top: 11px;
+  word-break: break-all;
+}
+
+/* ── Footer note ────────────────────────────────────────── */
+
+.note {
+  margin: 44px 0 72px;
+  padding: 18px 20px;
+  border: 1px dashed var(--line-mid);
+  background: rgba(5, 7, 14, 0.4);
+  font-size: 0.88rem;
+  color: var(--text-faint);
+  line-height: 1.7;
+}
+.note b { color: var(--text-dim); font-weight: 500; }
+.note code { font-family: var(--mono); font-size: 0.85em; color: var(--cyan); }
+
+.err {
+  margin-top: 26px;
+  padding: 16px 18px;
+  border: 1px solid rgba(255, 196, 107, 0.3);
+  background: rgba(255, 196, 107, 0.05);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--amber);
+}

@@ -69,3 +69,7 @@ midnight-level-db/
 *.backup.ts
 *.before-vero-edit.ts
 *.backup.compact
+
+# Next.js
+ui/.next/
+ui/next-env.d.ts
