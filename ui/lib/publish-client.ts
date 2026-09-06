@@ -98,11 +98,40 @@ export async function detectWallet(): Promise<any> {
   return preferred;
 }
 
+/**
+ * Wallets disagree on the handshake. 1AM exposes `connect()`; the CAIP-style
+ * connectors expose `enable()`; some inject the API directly with neither.
+ * Trying each in turn is cheaper than special-casing brands, and the errors
+ * name what was actually found rather than what was expected.
+ */
+async function openSession(connector: any): Promise<any> {
+  for (const method of ['connect', 'enable'] as const) {
+    if (typeof connector[method] === 'function') {
+      const api = await connector[method]();
+      return api ?? connector;
+    }
+  }
+  if (typeof connector.state === 'function') return connector;
+  const surface = Object.keys(connector).join(', ') || '(nothing enumerable)';
+  throw new Error(
+    `This wallet exposes no way to connect. It offers: ${surface}. ` +
+      'Expected connect(), enable(), or a ready API with state().',
+  );
+}
+
 export async function connectWallet(): Promise<{ api: any; address: string }> {
   const connector = await detectWallet();
-  const api = typeof connector.enable === 'function' ? await connector.enable() : connector;
+  const api = await openSession(connector);
+
+  if (typeof api.state !== 'function') {
+    throw new Error(
+      `Connected, but the wallet API has no state(). It offers: ${Object.keys(api).join(', ')}`,
+    );
+  }
+
   const state = await api.state();
-  const address: string = state.address ?? state.unshieldedAddress ?? '(unknown address)';
+  const address: string =
+    state.address ?? state.unshieldedAddress ?? state.addresses?.unshielded ?? '(unknown address)';
   return { api, address };
 }
 

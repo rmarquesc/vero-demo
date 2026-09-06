@@ -153,6 +153,10 @@ export default function PublishClient({ config }: { config: Config }) {
             <button className="btn" onClick={onConnect} disabled={stage === 'connecting'}>
               {stage === 'connecting' ? 'Waiting…' : 'Connect wallet'}
             </button>
+            {/* Errors belong next to the control that caused them. Reporting a
+                failed connection at the foot of the page reads as the button
+                doing nothing at all. */}
+            {error && !walletApi && <div className="err">{error}</div>}
           </>
         )}
       </section>
@@ -260,7 +264,7 @@ export default function PublishClient({ config }: { config: Config }) {
           </div>
         )}
 
-        {error && <div className="err">{error}</div>}
+        {error && walletApi && <div className="err">{error}</div>}
       </section>
     </>
   );
