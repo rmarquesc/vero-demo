@@ -17,6 +17,35 @@ source behind it.
 
 ---
 
+## For judges
+
+**Five minutes.** `npm install && npm test`. Thirty contract tests run in under
+a second with no Docker, no wallet and no node — they execute the compiled
+circuits directly through the Compact runtime, so every `assert` in
+`vero.compact` fires exactly as it would on-chain. The rejections are the half
+worth reading: [test/vero.test.ts](./test/vero.test.ts).
+
+**Twenty minutes.** `npm run setup` brings up a local devnet, compiles, deploys,
+appoints a registrar and grants a credential. `npm run test:e2e` reads the
+result back off the chain; `npm run test:forgery` attempts a forgery against it
+and fails if the forgery succeeds. Then `npm run cli` proves a credential
+against a post, and `npm --workspace ui run dev` renders the badge from live
+ledger state.
+
+**Where the Midnight-specific work is.** The contract is one file,
+[contracts/vero.compact](./contracts/vero.compact) — a Merkle registry, three
+domain-separated authorities, and one circuit that proves membership without
+revealing which leaf. Private state and the witness implementations are in
+[src/vero-credential.ts](./src/vero-credential.ts); that pair is where the
+dual-ledger model actually shows up.
+
+**What is deliberately unfinished**, and why, is written down rather than
+omitted: [What is verified, and what is not](#what-is-verified-and-what-is-not),
+[Honest limitations](#honest-limitations), and
+[docs/wave2-wallet-bridge.md](./docs/wave2-wallet-bridge.md).
+
+---
+
 ## What the contract proves today
 
 `contracts/vero.compact` holds a Merkle tree of credential leaves and a map of
