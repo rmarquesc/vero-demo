@@ -234,3 +234,124 @@ h1 em {
   line-height: 1.7;
   color: var(--amber);
 }
+
+/* ── Publisher view ─────────────────────────────────────── */
+
+.step {
+  border-top: 1px solid var(--line);
+  padding: 26px 0;
+}
+.step:last-of-type { border-bottom: 1px solid var(--line); }
+
+.step-k {
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin: 0 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.step-k .n { color: var(--cyan); }
+
+.step-help {
+  color: var(--text-dim);
+  font-size: 0.92rem;
+  margin: 0 0 16px;
+  max-width: 60ch;
+}
+.step-help code, .step-ok code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  color: var(--cyan);
+  word-break: break-all;
+}
+
+.step-ok {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  margin: 0 0 14px;
+}
+
+.field { display: block; margin-bottom: 14px; }
+.field span {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 6px;
+}
+.field input {
+  width: 100%;
+  padding: 10px 13px;
+  font-family: var(--mono);
+  font-size: 0.84rem;
+  /* Inputs default to a white background, which is invisible on this ground. */
+  background: var(--panel-lift);
+  color: var(--text);
+  border: 1px solid var(--line-mid);
+  border-radius: 0;
+}
+.field input:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 1px rgba(51, 230, 227, 0.25);
+}
+
+.btn {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 11px 20px;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--line-mid);
+  cursor: pointer;
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+}
+.btn:hover:not(:disabled) { color: var(--cyan); border-color: var(--cyan); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.primary { background: var(--cyan); color: var(--void); border-color: var(--cyan); }
+.btn.primary:hover:not(:disabled) { background: #7bf0ea; border-color: #7bf0ea; color: var(--void); }
+.btn.ghost { font-size: 0.7rem; padding: 8px 14px; }
+.btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+.picker { display: flex; flex-direction: column; gap: 1px; background: var(--line); }
+.pick {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  padding: 14px 16px;
+  background: rgba(5, 7, 14, 0.7);
+  cursor: pointer;
+}
+.pick.on { background: rgba(51, 230, 227, 0.055); }
+.pick input { grid-row: span 2; align-self: center; accent-color: var(--cyan); }
+.pick-who { font-size: 0.86rem; font-weight: 500; }
+.pick-text { font-size: 0.86rem; color: var(--text-faint); line-height: 1.5; }
+
+.working {
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  color: var(--amber);
+  margin: 16px 0 0;
+}
+
+.ok-box {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border: 1px solid rgba(51, 230, 227, 0.4);
+  background: rgba(51, 230, 227, 0.06);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.9;
+  color: var(--cyan);
+}
+.ok-box code { color: var(--text); }
+.ok-box a { color: var(--cyan); }

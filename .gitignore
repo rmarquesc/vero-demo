@@ -73,3 +73,5 @@ midnight-level-db/
 # Next.js
 ui/.next/
 ui/next-env.d.ts
+ui/public/zk/
+ui/lib/generated/
