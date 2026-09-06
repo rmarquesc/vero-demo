@@ -124,20 +124,30 @@ const credentialSecret = credential.secret;
 const issuerType = encodeIssuerType(credential.issuerType);
 const expiry = BigInt(credential.expirySeconds);
 
-// The credential commitment binds secret, issuer type and expiry together, so
-// none can be swapped without invalidating the others. It is the leaf that
-// goes into the registry.
-const credentialCommitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
-  credentialSecret,
-  issuerType,
-  expiry,
-);
+// What the subject hands to a registrar: a commitment to their secret, and
+// nothing else. The registrar states the issuer type and the expiry, and the
+// contract builds the leaf out of all three plus the registrar's own identity.
+const subjectCommitment: Uint8Array = Vero.pureCircuits.deriveSubjectCommitment(credentialSecret);
 
-// The constructor now takes the registrar's authority, not a credential: the
-// contract accepts whatever the registrar registers, rather than one hardcoded
-// credential.
 const registrarCommitment: Uint8Array = Vero.pureCircuits.deriveRegistrarCommitment(
   credential.registrarSecret,
+);
+
+// The constructor takes governance — who may appoint registrars — rather than
+// a credential or a registrar. Registrars are appointed afterwards, one per
+// issuer type.
+const governanceCommitment: Uint8Array = Vero.pureCircuits.deriveGovernanceCommitment(
+  credential.governanceSecret,
+);
+
+// Where this credential will land once the registrar grants it. Derived here
+// so the private state can carry it: a witness cannot see a circuit's
+// arguments, so the holder has to be told which leaf is theirs.
+const credentialLeaf: Uint8Array = Vero.pureCircuits.deriveCredentialLeaf(
+  subjectCommitment,
+  registrarCommitment,
+  issuerType,
+  expiry,
 );
 
 // ─── Providers ─────────────────────────────────────────────────────────────────
@@ -355,12 +365,13 @@ async function main() {
   }[credentialSource];
   console.log(`  Credential:  ${describeCredential(credential)}`);
   console.log(`  Source:      ${credentialOrigin}`);
-  console.log(`  Registrar:   ${toHex(registrarCommitment)}`);
+  console.log(`  Governance:  ${toHex(governanceCommitment)}`);
+  console.log(`  Registrar:   ${toHex(registrarCommitment)} (for ${credential.issuerType})`);
   {
     const w = warnIfUnbucketed(credential);
     if (w) console.log(w + '\\n');
   }
-  console.log(`  Credential commitment (registry leaf): ${toHex(credentialCommitment)}\n`);
+  console.log(`  Registry leaf: ${toHex(credentialLeaf)}\n`);
 
   if (credential.expirySeconds <= Math.floor(Date.now() / 1000)) {
     console.log('  ⚠ This credential is already expired. Deploying is fine — the commitment');
@@ -383,13 +394,18 @@ async function main() {
       // Midnight.js 4.1.x supplies private state via privateStateId +
       // initialPrivateState. Vero seeds it with the credential secret so the
       // witness can read it. args is the contract constructor's arguments:
-      // Vero's constructor takes the credential commitment, which is what
-      // every later proof is checked against.
+      // Vero's constructor takes the governance commitment: the authority that
+      // appoints registrars, which is what every later grant is checked against.
       deployed = await deployContract(providers, {
         compiledContract: compiledContract as any,
-        args: [registrarCommitment],
+        args: [governanceCommitment],
         privateStateId: PRIVATE_STATE_ID,
-        initialPrivateState: createPrivateState(credentialSecret, credentialCommitment, credential.registrarSecret),
+        initialPrivateState: createPrivateState(
+          credentialSecret,
+          credentialLeaf,
+          credential.registrarSecret,
+          credential.governanceSecret,
+        ),
       });
       break;
     } catch (err: any) {
@@ -455,19 +471,33 @@ async function main() {
   recordDeployment(network, contractAddress, address.toString());
   console.log('  Saved to .midnight-state.json\n');
 
-  // Register the demo credential so a fresh clone has something to prove
-  // against. In a real deployment this is a separate act by the issuer; here
-  // the same machine plays registrar and subject.
-  console.log('─── Register demo credential ───────────────────────────────────\n');
+  // Appoint a registrar, then have it grant the demo credential, so a fresh
+  // clone has something to prove against. In a real deployment these are three
+  // separate parties; here the same machine plays governance, registrar and
+  // subject, which is why one file holds all three secrets.
+  console.log('─── Appoint the demo registrar ─────────────────────────────────\n');
+  console.log(`  Submitting appointRegistrar for "${credential.issuerType}" (30-60 seconds)...`);
+  try {
+    const tx = await (deployed as any).callTx.appointRegistrar(issuerType, registrarCommitment);
+    console.log('  ✅ Registrar appointed');
+    console.log(`  Transaction ID: ${tx.public.txId}\n`);
+  } catch (err: any) {
+    console.error(`  ❌ appointRegistrar failed: ${err?.message ?? err}`);
+    console.error('     Without a registrar for this issuer type nothing can be granted.\n');
+    await walletCtx.wallet.stop();
+    process.exit(1);
+  }
+
+  console.log('─── Grant the demo credential ──────────────────────────────────\n');
   console.log('  Submitting registerCredential (this may take 30-60 seconds)...');
   try {
-    const tx = await (deployed as any).callTx.registerCredential(credentialCommitment);
-    console.log('  ✅ Credential registered in the Merkle registry');
+    const tx = await (deployed as any).callTx.registerCredential(subjectCommitment, issuerType, expiry);
+    console.log('  ✅ Credential granted and inserted into the Merkle registry');
     console.log(`  Transaction ID: ${tx.public.txId}\n`);
   } catch (err: any) {
     console.error(`  ❌ registerCredential failed: ${err?.message ?? err}`);
     console.error('     The contract is deployed, but the registry is empty — verifySource');
-    console.error('     will fail until a credential is registered.\n');
+    console.error('     will fail until a credential is granted.\n');
   }
 
   await persistWalletState(network, walletCtx);

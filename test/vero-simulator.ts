@@ -48,6 +48,7 @@ export type MerklePath = { leaf: Uint8Array; path: { sibling: { field: bigint };
 
 /** The witness surface the contract declares. */
 export type VeroWitnesses = {
+  governanceSecret(ctx: { ledger: any; privateState: VeroPrivateState }): [VeroPrivateState, Uint8Array];
   registrarSecret(ctx: { ledger: any; privateState: VeroPrivateState }): [VeroPrivateState, Uint8Array];
   credentialSecret(ctx: { ledger: any; privateState: VeroPrivateState }): [VeroPrivateState, Uint8Array];
   credentialPath(ctx: { ledger: any; privateState: VeroPrivateState }): [VeroPrivateState, MerklePath];
@@ -64,18 +65,33 @@ export const secretFor = (label: string): Uint8Array =>
 /** The contract never reads `ownPublicKey()`, so any well-formed key will do. */
 const COIN_PUBLIC_KEY = { bytes: new Uint8Array(32) };
 
+export const deriveGovernanceCommitment = (secret: Uint8Array): Uint8Array =>
+  Vero.pureCircuits.deriveGovernanceCommitment(secret);
+
 export const deriveRegistrarCommitment = (secret: Uint8Array): Uint8Array =>
   Vero.pureCircuits.deriveRegistrarCommitment(secret);
 
-export const deriveCredentialCommitment = (
-  secret: Uint8Array,
+export const deriveSubjectCommitment = (secret: Uint8Array): Uint8Array =>
+  Vero.pureCircuits.deriveSubjectCommitment(secret);
+
+export const deriveCredentialLeaf = (
+  subject: Uint8Array,
+  registrar: Uint8Array,
   issuerType: Uint8Array,
   expiry: bigint,
-): Uint8Array => Vero.pureCircuits.deriveCredentialCommitment(secret, issuerType, expiry);
+): Uint8Array => Vero.pureCircuits.deriveCredentialLeaf(subject, registrar, issuerType, expiry);
+
+/** The leaf a credential occupies, from the holder's secret rather than their commitment. */
+export const leafFor = (
+  credentialSecret: Uint8Array,
+  registrar: Uint8Array,
+  issuerType: Uint8Array,
+  expiry: bigint,
+): Uint8Array => deriveCredentialLeaf(deriveSubjectCommitment(credentialSecret), registrar, issuerType, expiry);
 
 export type SimulatorOptions = {
-  /** Commitment of the registrar the contract is deployed with. */
-  registrarCommitment: Uint8Array;
+  /** Commitment of the governance authority the contract is deployed with. */
+  governanceCommitment: Uint8Array;
   /** Private state backing the witnesses. */
   privateState: VeroPrivateState;
   /** Block time, in SECONDS since the epoch — the unit Midnight compares against. */
@@ -100,7 +116,7 @@ export class VeroSimulator {
 
     const constructed = this.contract.initialState(
       createConstructorContext(options.privateState, COIN_PUBLIC_KEY),
-      options.registrarCommitment,
+      options.governanceCommitment,
     );
     // `.data` rather than the ContractState itself: both the circuit context
     // and the ledger decoder want the ChargedState, and keeping one type here
@@ -133,7 +149,12 @@ export class VeroSimulator {
       findPathForLeaf(leaf: Uint8Array): MerklePath | undefined;
       checkRoot(root: { field: bigint }): boolean;
     };
-    registrarCommitment: Uint8Array;
+    registrars: {
+      size(): bigint;
+      member(key: Uint8Array): boolean;
+      lookup(key: Uint8Array): Uint8Array;
+    };
+    governanceCommitment: Uint8Array;
     verifiedPosts: {
       size(): bigint;
       member(key: Uint8Array): boolean;
@@ -143,8 +164,12 @@ export class VeroSimulator {
     return Vero.ledger(this.state);
   }
 
-  registerCredential(commitment: Uint8Array): void {
-    this.call('registerCredential', commitment);
+  appointRegistrar(issuerType: Uint8Array, registrarCommitment: Uint8Array): void {
+    this.call('appointRegistrar', issuerType, registrarCommitment);
+  }
+
+  registerCredential(subjectCommitment: Uint8Array, issuerType: Uint8Array, expiry: bigint): void {
+    this.call('registerCredential', subjectCommitment, issuerType, expiry);
   }
 
   verifySource(postHash: Uint8Array, issuerType: Uint8Array, expiry: bigint): void {
@@ -156,7 +181,7 @@ export class VeroSimulator {
    * per call is what makes `at()` work — block time is fixed when the context
    * is built, so reusing one would freeze the clock at the first call.
    */
-  private call(circuit: 'registerCredential' | 'verifySource', ...args: unknown[]): void {
+  private call(circuit: 'appointRegistrar' | 'registerCredential' | 'verifySource', ...args: unknown[]): void {
     const context = createCircuitContext(
       this.address,
       COIN_PUBLIC_KEY,

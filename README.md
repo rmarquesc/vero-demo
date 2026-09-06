@@ -19,23 +19,28 @@ source behind it.
 
 ## What the contract proves today
 
-`contracts/vero.compact` holds a Merkle tree of credential commitments. A leaf
-is the hash of three things bound together:
+`contracts/vero.compact` holds a Merkle tree of credential leaves and a map of
+who may grant them. A leaf binds four things:
 
 ```
-leaf = persistentHash("vero:credential:v3", secret, issuerType, expiry)
+leaf = persistentHash("vero:credential:v4", subject, registrar, issuerType, expiry)
 ```
+
+where `subject = persistentHash("vero:subject:v4", secret)` is all the holder
+ever hands over.
 
 Calling `verifySource(postHash, issuerType, expiry)` proves, in one circuit,
 that:
 
-1. the caller knows a `secret` whose commitment is **a leaf in the registry** —
-   without revealing which leaf, so the reader learns that an accredited
-   journalist verified the post, not *which* journalist nor which newsroom
-   credentialed them;
+1. the caller knows a `secret` whose leaf is **in the registry** — without
+   revealing which leaf, so the reader learns that an accredited journalist
+   verified the post, not *which* journalist nor which newsroom credentialed
+   them;
 2. the credential **has not expired**, checked against Midnight's block time;
 3. the issuer type recorded against the post is the one bound into that
-   credential — a source cannot re-badge itself while reusing a secret.
+   credential — a source cannot re-badge itself while reusing a secret;
+4. the credential was granted by **the registrar the contract currently
+   recognises** for that issuer type.
 
 The secret never leaves the prover. What reaches the ledger is the post hash
 and the issuer type.
@@ -47,24 +52,52 @@ somebody else's credential. `checkRoot` passing therefore proves nothing on its
 own. What closes the hole:
 
 ```compact
-assert(path.leaf == commitment, "Merkle path does not belong to this credential");
+assert(path.leaf == leaf, "Merkle path does not belong to this credential");
 ```
 
-binding the path to the commitment derived from the prover's own secret.
+binding the path to the leaf derived from the prover's own secret.
 Two tests guard it: `npm test` proves the rejection in process, and
 `npm run test:forgery` proves it again through a real devnet. Both hold an
 unregistered secret while supplying a genuine path to a registered leaf, and
 fail if that is ever accepted.
 
-### Who can register
+### Who can grant what
 
-`registerCredential` is gated on a registrar secret whose commitment is set at
-deploy time. It is deliberately **not** gated on `ownPublicKey()` — that value
-is supplied by the prover and any caller can set it to anything, so it cannot
+There are three roles, each with its own domain-separated commitment, so no
+secret can be replayed as another role's authority:
+
+| Role | Can do | Set by |
+|---|---|---|
+| Governance | `appointRegistrar(issuerType, registrar)` | The constructor, at deploy |
+| Registrar | `registerCredential(subject, issuerType, expiry)` for **its own** issuer type | Governance |
+| Holder | `verifySource(postHash, issuerType, expiry)` | A registrar |
+
+**One registrar per issuer type**, because the body that grants a credential is
+the only one that can say whether it still holds. A press council may accredit
+journalists; it has no standing to certify surgeons, and `registrars` is what
+stops it doing so.
+
+All three are gated on a secret rather than on `ownPublicKey()` — that value is
+supplied by the prover and any caller can set it to anything, so it cannot
 carry authority.
 
-The subject derives its own commitment off-chain and hands over only that, so
-the credential secret never reaches the registrar.
+### Why the registrar is in the leaf
+
+The subject hands a registrar one thing: a commitment to a secret it never
+reveals. The issuer type and the expiry come from the registrar, and the
+contract builds the leaf.
+
+Earlier versions took the finished leaf from the subject, which meant the
+registrar signed off on 32 opaque bytes. With a single trusted registrar that
+was survivable. With several it is not — a subject could take a commitment
+built with `issuerType = "journalist:accredited"` to whichever registrar was
+easiest to convince, and the registry would have accepted it.
+
+Binding the granting registrar into the leaf has a second consequence worth
+stating: when governance replaces a registrar, every credential the old one
+granted stops verifying. That is the intended behaviour. Governance replaces a
+registrar precisely when it should no longer be trusted, and the alternative
+would silently transfer its credentials to the replacement.
 
 ---
 
@@ -104,7 +137,7 @@ something to prove against.
 npm test
 ```
 
-23 tests, under a second, **and no Docker**. They drive the compiled circuits
+30 tests, under a second, **and no Docker**. They drive the compiled circuits
 directly through the Compact runtime, so every `assert` in `vero.compact` fires
 exactly as it would on-chain — only the proving is skipped. If the contract has
 not been compiled yet the command compiles it first, without proving keys, so a
@@ -115,10 +148,13 @@ ones that decide whether any of this is worth anything:
 
 | What is tested | Why it is there |
 |---|---|
+| A registrar granting a credential of somebody else's issuer type | A medical board must not be able to accredit journalists |
+| A registrar that governance never appointed | Authority comes from the appointment, not from asking |
+| A credential proven after its registrar was replaced | Replacing a registrar must not transfer its credentials |
 | A genuine Merkle path belonging to somebody else | The forgery. Leaves are public, so the path alone must not be enough |
 | A path built against a different registry | `checkRoot` is the only thing that catches this one |
 | A credential proven under an issuer type it was not issued for | The issuer type is bound into the leaf |
-| Registration by anyone who is not the registrar | Authority cannot come from `ownPublicKey()` |
+| Appointing a registrar without the governance secret | Authority cannot come from `ownPublicKey()` |
 | Expiry, one second either side of the boundary | Block time is the one thing a live devnet cannot rewind |
 | An expiry expressed in milliseconds | Regression for a bug that has no symptom — see below |
 
@@ -130,10 +166,14 @@ contract.
 ### The credential
 
 `.vero-credential` (JSON, mode `0600`, gitignored) holds the credential secret,
-issuer type, expiry and the registrar secret. It must be identical at deploy
-time and at proof time — all four fields feed the commitment. Environment
-overrides: `VERO_CREDENTIAL_SECRET`, `VERO_ISSUER_TYPE`,
-`VERO_CREDENTIAL_EXPIRY` (unix **seconds**), `VERO_REGISTRAR_SECRET`.
+issuer type and expiry, plus the registrar and governance secrets. In a real
+deployment those three belong to three different parties; the demo plays all of
+them from one machine, which is why one file holds the lot.
+
+Every field feeds the leaf, directly or through the registrar's commitment, so
+they must be identical at deploy time and at proof time. Environment overrides:
+`VERO_CREDENTIAL_SECRET`, `VERO_ISSUER_TYPE`, `VERO_CREDENTIAL_EXPIRY`
+(unix **seconds**), `VERO_REGISTRAR_SECRET`, `VERO_GOVERNANCE_SECRET`.
 
 Two details worth knowing before changing anything here:
 
@@ -158,14 +198,15 @@ devnet. Nothing has been exercised on a public network.
 
 | Behaviour | Status |
 |---|---|
-| Deploy, credential registration, membership proof accepted | observed |
+| Deploy, registrar appointment, credential grant, membership proof accepted | observed |
 | Expired credential refused on the expiry assert | observed |
 | Merkle path for a foreign leaf refused | observed |
+| Registrar refused a credential of another registrar's issuer type | observed |
 | Issuer type read back from the ledger | observed |
 | Fresh clone runs from scratch | observed |
 | Behaviour on `preview` / `preprod` | **untested** |
 | Credential revocation | not implemented |
-| Multiple registrars, issuer governance | out of scope for Wave 1 |
+| Governance beyond one commitment (multisig, on-chain vote) | not implemented |
 
 ### The demo surface
 
@@ -193,9 +234,14 @@ npm --workspace ui run dev           # http://localhost:3100
 
 ### Honest limitations
 
-- **The registrar is the trust anchor.** Vero proves that a credential was
-  registered. It does not prove the registrar checked anything before
-  registering it. `issuerType` is a label the registrar asserts.
+- **The registrar is the trust anchor.** Vero proves that the registrar the
+  contract recognises for an issuer type granted this credential. It does not
+  prove that registrar checked anything before granting it. `issuerType` is a
+  label the registrar asserts.
+- **Governance is one commitment.** Whoever holds the governance secret can
+  appoint any registrar for any issuer type, including replacing one. A real
+  deployment needs a multisig of institutions or an on-chain vote; this is the
+  most obvious next thing to replace.
 - **The disclosed expiry narrows the anonymity set** to everyone credentialed
   in the same quarter with the same issuer type. Removing the disclosure
   entirely means making validity mean "present in the current tree", with a

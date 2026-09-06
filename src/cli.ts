@@ -78,9 +78,12 @@ const { credential } = loadOrCreateCredential();
 const credentialSecret = credential.secret;
 const issuerType = encodeIssuerType(credential.issuerType);
 const expiry = BigInt(credential.expirySeconds);
-// The path witness looks this leaf up in the on-chain registry.
-const credentialCommitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
-  credentialSecret,
+// The path witness looks this leaf up in the on-chain registry. The contract
+// builds it from the subject commitment, the granting registrar, the issuer
+// type and the expiry, so all four have to match what was granted.
+const credentialLeaf: Uint8Array = Vero.pureCircuits.deriveCredentialLeaf(
+  Vero.pureCircuits.deriveSubjectCommitment(credentialSecret),
+  Vero.pureCircuits.deriveRegistrarCommitment(credential.registrarSecret),
   issuerType,
   expiry,
 );
@@ -192,7 +195,12 @@ async function main() {
       compiledContract: compiledContract as any,
       contractAddress: deployment.address,
       privateStateId: PRIVATE_STATE_ID,
-      initialPrivateState: createPrivateState(credentialSecret, credentialCommitment, credential.registrarSecret),
+      initialPrivateState: createPrivateState(
+        credentialSecret,
+        credentialLeaf,
+        credential.registrarSecret,
+        credential.governanceSecret,
+      ),
     });
 
     console.log('  ✅ Connected!');
@@ -272,7 +280,11 @@ async function main() {
               console.log('  📋 Verified:     no record');
             }
             console.log(`  Posts on-chain:  ${ledgerState.verifiedPosts.size()}`);
-            console.log(`  Registrar:       ${toHex(ledgerState.registrarCommitment)}\n`);
+            const registrarFor = ledgerState.registrars.member(issuerType)
+              ? toHex(ledgerState.registrars.lookup(issuerType))
+              : 'none appointed';
+            console.log(`  Registrars:      ${ledgerState.registrars.size()} appointed`);
+            console.log(`  For ${credential.issuerType}: ${registrarFor}\n`);
           } catch (error) {
             console.error('\n  ❌ Failed:', error instanceof Error ? error.message : error);
           }

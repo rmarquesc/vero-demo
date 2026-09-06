@@ -54,19 +54,24 @@ async function main() {
 
   // The victim's credential — the one actually in the registry.
   const { credential } = loadOrCreateCredential();
-  const victimLeaf: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
-    credential.secret,
-    encodeIssuerType(credential.issuerType),
-    BigInt(credential.expirySeconds),
+  const issuerType = encodeIssuerType(credential.issuerType);
+  const expiry = BigInt(credential.expirySeconds);
+  const registrarCommitment: Uint8Array = Vero.pureCircuits.deriveRegistrarCommitment(
+    credential.registrarSecret,
   );
+  const leafFor = (secret: Uint8Array): Uint8Array =>
+    Vero.pureCircuits.deriveCredentialLeaf(
+      Vero.pureCircuits.deriveSubjectCommitment(secret),
+      registrarCommitment,
+      issuerType,
+      expiry,
+    );
 
-  // The attacker: a secret that was never registered.
+  const victimLeaf = leafFor(credential.secret);
+
+  // The attacker: a secret no registrar ever granted a credential for.
   const attackerSecret = Uint8Array.from(crypto.randomBytes(32));
-  const attackerLeaf: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
-    attackerSecret,
-    encodeIssuerType(credential.issuerType),
-    BigInt(credential.expirySeconds),
-  );
+  const attackerLeaf = leafFor(attackerSecret);
   if (toHex(attackerLeaf) === toHex(victimLeaf)) fail('attacker leaf collided with the victim leaf');
 
   console.log(`  victim leaf (registered): ${toHex(victimLeaf)}`);
@@ -76,6 +81,7 @@ async function main() {
   const forgedWitnesses = {
     credentialSecret: ({ privateState }: any) => [privateState, attackerSecret],
     registrarSecret: ({ privateState }: any) => [privateState, new Uint8Array(32)],
+    governanceSecret: ({ privateState }: any) => [privateState, new Uint8Array(32)],
     credentialPath: ({ ledger, privateState }: any) => {
       const p = ledger.credentialRegistry.findPathForLeaf(victimLeaf);
       if (!p) fail('victim credential is not in the registry — deploy first');
@@ -126,8 +132,9 @@ async function main() {
     privateStateId: PRIVATE_STATE_ID,
     initialPrivateState: {
       credentialSecret: attackerSecret,
-      credentialCommitment: attackerLeaf,
+      credentialLeaf: attackerLeaf,
       registrarSecret: new Uint8Array(32),
+      governanceSecret: new Uint8Array(32),
     },
   });
 
@@ -135,8 +142,8 @@ async function main() {
   try {
     await deployed.callTx.verifySource(
       hashPost('https://exemplo.pt/post-forjado'),
-      encodeIssuerType(credential.issuerType),
-      BigInt(credential.expirySeconds),
+      issuerType,
+      expiry,
     );
   } catch (err: any) {
     const msg = err?.message ?? String(err);

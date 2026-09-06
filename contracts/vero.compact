@@ -2,10 +2,9 @@ pragma language_version 0.23;
 
 import CompactStandardLibrary;
 
-// Credentials the registry accepts, as a Merkle tree of credential
-// commitments. Membership proofs do not reveal which leaf is being proven, so
-// a source proves "one of the registered credentials is mine" without
-// revealing which issuer stands behind it.
+// Credentials the registry accepts, as a Merkle tree of credential leaves.
+// Membership proofs do not reveal which leaf is being proven, so a source
+// proves "one of the registered credentials is mine" without revealing which.
 //
 // Plain MerkleTree rather than HistoricMerkleTree on purpose: historic roots
 // would keep accepting proofs against pre-revocation versions of the tree,
@@ -13,49 +12,109 @@ import CompactStandardLibrary;
 // proof time, so insertions invalidating older paths costs nothing.
 export ledger credentialRegistry: MerkleTree<10, Bytes<32>>;
 
-// Who may register credentials. Stored as a commitment rather than a public
-// key because ownPublicKey() is prover-supplied and cannot gate authority.
-export ledger registrarCommitment: Bytes<32>;
+// issuerType -> the commitment of the registrar entitled to grant it.
+//
+// One registrar per issuer type, because the body that grants a credential is
+// the only one that can say whether it still holds. A press council may
+// appoint journalists; it has no standing to certify surgeons, and this map is
+// what stops it doing so.
+export ledger registrars: Map<Bytes<32>, Bytes<32>>;
+
+// Who may appoint registrars. A single commitment set at deploy time; real
+// governance (a multisig of institutions, or an on-chain vote) is out of scope
+// and is the obvious next thing to replace here.
+export ledger governanceCommitment: Bytes<32>;
 
 // postHash -> issuerType of the source that verified it.
 export ledger verifiedPosts: Map<Bytes<32>, Bytes<32>>;
 
-constructor(registrar: Bytes<32>) {
-  registrarCommitment = disclose(registrar);
+constructor(governance: Bytes<32>) {
+  governanceCommitment = disclose(governance);
 }
 
+witness governanceSecret(): Bytes<32>;
 witness registrarSecret(): Bytes<32>;
 witness credentialSecret(): Bytes<32>;
 witness credentialPath(): MerkleTreePath<10, Bytes<32>>;
 
-export circuit deriveRegistrarCommitment(secret: Bytes<32>): Bytes<32> {
-  return persistentHash<Vector<2, Bytes<32>>>([
-    pad(32, "vero:registrar:v3"),
-    secret
-  ]);
+// Each role gets its own domain tag, so one secret cannot be replayed as
+// another role's authority.
+export circuit deriveGovernanceCommitment(secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "vero:governance:v4"), secret]);
 }
 
-export circuit deriveCredentialCommitment(
-  secret: Bytes<32>,
+export circuit deriveRegistrarCommitment(secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "vero:registrar:v4"), secret]);
+}
+
+// What the subject hands to a registrar: a commitment to their secret, and
+// nothing else. The subject no longer builds the whole leaf, which is the
+// point of this version — see registerCredential.
+export circuit deriveSubjectCommitment(secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "vero:subject:v4"), secret]);
+}
+
+// The leaf binds four things: who holds it, who vouched for it, what it says,
+// and until when.
+//
+// `registrar` is in here as well as `issuerType` because the two answer
+// different questions. issuerType stops a credential granted as one thing
+// being proven as another when a registrar covers several types. registrar
+// records who actually vouched, so replacing the registrar for a type — which
+// governance would do precisely because the old one was compromised —
+// invalidates every credential the old one granted, rather than silently
+// transferring them to its replacement.
+export circuit deriveCredentialLeaf(
+  subject: Bytes<32>,
+  registrar: Bytes<32>,
   issuerType: Bytes<32>,
   expiry: Uint<64>
 ): Bytes<32> {
-  return persistentHash<[Bytes<32>, Bytes<32>, Bytes<32>, Uint<64>]>([
-    pad(32, "vero:credential:v3"),
-    secret,
+  return persistentHash<[Bytes<32>, Bytes<32>, Bytes<32>, Bytes<32>, Uint<64>]>([
+    pad(32, "vero:credential:v4"),
+    subject,
+    registrar,
     issuerType,
     expiry
   ]);
 }
 
-// The subject derives their own commitment off-chain and hands only that to
-// the registrar, so the credential secret never leaves the subject.
-export circuit registerCredential(commitment: Bytes<32>): [] {
+export circuit appointRegistrar(issuerType: Bytes<32>, registrar: Bytes<32>): [] {
   assert(
-    registrarCommitment == deriveRegistrarCommitment(registrarSecret()),
-    "Caller is not the registrar"
+    governanceCommitment == deriveGovernanceCommitment(governanceSecret()),
+    "Caller is not governance"
   );
-  credentialRegistry.insert(disclose(commitment));
+  registrars.insert(disclose(issuerType), disclose(registrar));
+}
+
+// The registrar states what it is granting; the contract builds the leaf.
+//
+// Earlier versions took the finished leaf from the subject, which meant the
+// registrar signed off on 32 opaque bytes. With one trusted registrar that was
+// survivable. With several it is not: a subject could take a commitment built
+// with issuerType "journalist:accredited" to whichever registrar was easiest
+// to convince, and the registry would accept it. Now the issuer type and the
+// expiry come from the registrar, and the subject contributes only a
+// commitment to a secret it never reveals.
+export circuit registerCredential(
+  subjectCommitment: Bytes<32>,
+  issuerType: Bytes<32>,
+  expiry: Uint<64>
+): [] {
+  assert(registrars.member(disclose(issuerType)), "No registrar for this issuer type");
+
+  // Gated on a secret rather than on ownPublicKey(): that value is supplied by
+  // the prover and any caller can set it to anything, so it cannot carry
+  // authority.
+  const registrar = deriveRegistrarCommitment(registrarSecret());
+  assert(
+    registrars.lookup(disclose(issuerType)) == registrar,
+    "Caller is not the registrar for this issuer type"
+  );
+
+  credentialRegistry.insert(
+    disclose(deriveCredentialLeaf(subjectCommitment, registrar, issuerType, expiry))
+  );
 }
 
 export circuit verifySource(
@@ -63,23 +122,28 @@ export circuit verifySource(
   issuerType: Bytes<32>,
   expiry: Uint<64>
 ): [] {
-  const commitment = deriveCredentialCommitment(credentialSecret(), issuerType, expiry);
+  assert(registrars.member(disclose(issuerType)), "No registrar for this issuer type");
+  const registrar = registrars.lookup(disclose(issuerType));
+
+  const leaf = deriveCredentialLeaf(
+    deriveSubjectCommitment(credentialSecret()),
+    registrar,
+    issuerType,
+    expiry
+  );
   const path = credentialPath();
 
   // Bind the path to *this* credential. The tree's contents are public, so
   // without this a prover could supply a valid path for somebody else's leaf
   // and satisfy checkRoot while knowing no secret at all.
-  assert(path.leaf == commitment, "Merkle path does not belong to this credential");
+  assert(path.leaf == leaf, "Merkle path does not belong to this credential");
 
   assert(
     credentialRegistry.checkRoot(disclose(merkleTreePathRoot<10, Bytes<32>>(path))),
     "Credential is not in the registry"
   );
 
-  assert(
-    kernel.blockTimeLessThan(disclose(expiry)),
-    "Credential has expired"
-  );
+  assert(kernel.blockTimeLessThan(disclose(expiry)), "Credential has expired");
 
   verifiedPosts.insert(disclose(postHash), disclose(issuerType));
 }

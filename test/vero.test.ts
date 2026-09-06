@@ -11,8 +11,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   VeroSimulator,
   secretFor,
-  deriveCredentialCommitment,
+  deriveGovernanceCommitment,
   deriveRegistrarCommitment,
+  deriveSubjectCommitment,
+  deriveCredentialLeaf,
+  leafFor,
   type MerklePath,
 } from './vero-simulator';
 import {
@@ -26,81 +29,93 @@ import {
 } from '../src/vero-credential';
 
 const JOURNALIST = encodeIssuerType('journalist:accredited');
-const EDITOR = encodeIssuerType('editor:newsroom');
+const SURGEON = encodeIssuerType('surgeon:licensed');
+const UNCLAIMED = encodeIssuerType('sommelier:certified');
 
 /** 2025-10-09, and 2026-01-01T00:00:00Z — a quarter boundary, as issued expiries are. */
 const NOW = 1_760_000_000;
 const EXPIRY = 1_767_225_600n;
 
-const REGISTRAR_SECRET = secretFor('registrar');
-const REGISTRAR_COMMITMENT = deriveRegistrarCommitment(REGISTRAR_SECRET);
+const GOVERNANCE_SECRET = secretFor('governance');
+const GOVERNANCE_COMMITMENT = deriveGovernanceCommitment(GOVERNANCE_SECRET);
+
+/** Two institutions, each authoritative over its own profession and nothing else. */
+const PRESS_COUNCIL_SECRET = secretFor('press-council');
+const PRESS_COUNCIL = deriveRegistrarCommitment(PRESS_COUNCIL_SECRET);
+const MEDICAL_BOARD_SECRET = secretFor('medical-board');
+const MEDICAL_BOARD = deriveRegistrarCommitment(MEDICAL_BOARD_SECRET);
 
 const SOURCE_SECRET = secretFor('source');
-const SOURCE_COMMITMENT = deriveCredentialCommitment(SOURCE_SECRET, JOURNALIST, EXPIRY);
-
-const OTHER_SECRET = secretFor('other-source');
-const OTHER_COMMITMENT = deriveCredentialCommitment(OTHER_SECRET, JOURNALIST, EXPIRY);
+const SOURCE_SUBJECT = deriveSubjectCommitment(SOURCE_SECRET);
+/** Where the source's credential lands once the press council grants it. */
+const SOURCE_LEAF = leafFor(SOURCE_SECRET, PRESS_COUNCIL, JOURNALIST, EXPIRY);
 
 const POST = hashPost('https://exemplo.pt/reportagem');
 const OTHER_POST = hashPost('https://exemplo.pt/segunda-reportagem');
 
-const NO_SECRET = new Uint8Array(32);
+const NONE = new Uint8Array(32);
 
-const stateOf = (
-  credentialSecret: Uint8Array,
-  credentialCommitment: Uint8Array,
-  registrarSecret: Uint8Array = NO_SECRET,
-): VeroPrivateState => ({ credentialSecret, credentialCommitment, registrarSecret });
+type Actor = VeroPrivateState;
 
-/** Whoever holds the registrar secret. Holds no credential of their own. */
-const REGISTRAR = stateOf(NO_SECRET, new Uint8Array(32), REGISTRAR_SECRET);
-/** The accredited journalist. */
-const SOURCE = stateOf(SOURCE_SECRET, SOURCE_COMMITMENT);
+const actor = (over: Partial<Actor> = {}): Actor => ({
+  credentialSecret: NONE,
+  credentialLeaf: NONE,
+  registrarSecret: NONE,
+  governanceSecret: NONE,
+  ...over,
+});
+
+const GOVERNANCE = actor({ governanceSecret: GOVERNANCE_SECRET });
+const PRESS = actor({ registrarSecret: PRESS_COUNCIL_SECRET });
+const MEDICAL = actor({ registrarSecret: MEDICAL_BOARD_SECRET });
+const SOURCE = actor({ credentialSecret: SOURCE_SECRET, credentialLeaf: SOURCE_LEAF });
 
 const deploy = (overrides: Partial<ConstructorParameters<typeof VeroSimulator>[0]> = {}) =>
   new VeroSimulator({
-    registrarCommitment: REGISTRAR_COMMITMENT,
-    privateState: REGISTRAR,
+    governanceCommitment: GOVERNANCE_COMMITMENT,
+    privateState: GOVERNANCE,
     time: NOW,
     ...overrides,
   });
 
-/** A contract with the source's credential already in the registry. */
-function withRegisteredSource(): VeroSimulator {
+/** Governance has appointed the press council, which has granted the source a credential. */
+function withCredentialedSource(): VeroSimulator {
   const vero = deploy();
-  vero.as(REGISTRAR).registerCredential(SOURCE_COMMITMENT);
+  vero.as(GOVERNANCE).appointRegistrar(JOURNALIST, PRESS_COUNCIL);
+  vero.as(PRESS).registerCredential(SOURCE_SUBJECT, JOURNALIST, EXPIRY);
   return vero;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('deriveCredentialCommitment', () => {
-  it('binds the secret, the issuer type and the expiry together', () => {
-    const base = deriveCredentialCommitment(SOURCE_SECRET, JOURNALIST, EXPIRY);
+describe('the commitment scheme', () => {
+  it('separates the three roles a single secret could otherwise fill', () => {
+    // Without distinct domain tags, a registrar secret would double as a
+    // governance secret and appoint its own peers.
+    const one = secretFor('reused-everywhere');
+    const commitments = new Set([
+      toHex(deriveGovernanceCommitment(one)),
+      toHex(deriveRegistrarCommitment(one)),
+      toHex(deriveSubjectCommitment(one)),
+    ]);
+    expect(commitments.size).toEqual(3);
+  });
 
-    // Change any one of the three and the leaf moves. This is what stops a
-    // credential issued as one thing being proven as another.
-    expect(toHex(deriveCredentialCommitment(OTHER_SECRET, JOURNALIST, EXPIRY))).not.toEqual(toHex(base));
-    expect(toHex(deriveCredentialCommitment(SOURCE_SECRET, EDITOR, EXPIRY))).not.toEqual(toHex(base));
-    expect(toHex(deriveCredentialCommitment(SOURCE_SECRET, JOURNALIST, EXPIRY + 1n))).not.toEqual(toHex(base));
+  it('binds the holder, the granting registrar, the issuer type and the expiry into the leaf', () => {
+    const base = deriveCredentialLeaf(SOURCE_SUBJECT, PRESS_COUNCIL, JOURNALIST, EXPIRY);
+
+    expect(toHex(deriveCredentialLeaf(deriveSubjectCommitment(secretFor('someone else')), PRESS_COUNCIL, JOURNALIST, EXPIRY))).not.toEqual(toHex(base));
+    expect(toHex(deriveCredentialLeaf(SOURCE_SUBJECT, MEDICAL_BOARD, JOURNALIST, EXPIRY))).not.toEqual(toHex(base));
+    expect(toHex(deriveCredentialLeaf(SOURCE_SUBJECT, PRESS_COUNCIL, SURGEON, EXPIRY))).not.toEqual(toHex(base));
+    expect(toHex(deriveCredentialLeaf(SOURCE_SUBJECT, PRESS_COUNCIL, JOURNALIST, EXPIRY + 1n))).not.toEqual(toHex(base));
   });
 
   it('is deterministic', () => {
-    expect(toHex(deriveCredentialCommitment(SOURCE_SECRET, JOURNALIST, EXPIRY))).toEqual(
-      toHex(deriveCredentialCommitment(SOURCE_SECRET, JOURNALIST, EXPIRY)),
-    );
-  });
-
-  it('is domain-separated from the registrar commitment', () => {
-    // Both hash a 32-byte secret; only the domain tag keeps a registrar secret
-    // from doubling as a credential secret.
-    expect(toHex(deriveRegistrarCommitment(SOURCE_SECRET))).not.toEqual(
-      toHex(deriveCredentialCommitment(SOURCE_SECRET, JOURNALIST, EXPIRY)),
-    );
+    expect(toHex(leafFor(SOURCE_SECRET, PRESS_COUNCIL, JOURNALIST, EXPIRY))).toEqual(toHex(SOURCE_LEAF));
   });
 });
 
-describe('registerCredential', () => {
+describe('appointRegistrar', () => {
   let vero: VeroSimulator;
 
   beforeEach(() => {
@@ -109,44 +124,96 @@ describe('registerCredential', () => {
 
   afterEach(() => {
     // Nothing in the contract may move the root of trust.
-    expect(toHex(vero.ledger.registrarCommitment)).toEqual(toHex(REGISTRAR_COMMITMENT));
+    expect(toHex(vero.ledger.governanceCommitment)).toEqual(toHex(GOVERNANCE_COMMITMENT));
   });
 
-  it('starts with an empty registry', () => {
-    expect(vero.ledger.credentialRegistry.firstFree()).toEqual(0n);
-    expect(vero.ledger.credentialRegistry.findPathForLeaf(SOURCE_COMMITMENT)).toBeUndefined();
+  it('starts with no registrars', () => {
+    expect(vero.ledger.registrars.size()).toEqual(0n);
+    expect(vero.ledger.registrars.member(JOURNALIST)).toBe(false);
   });
 
-  it('inserts a leaf when the registrar registers a credential', () => {
-    vero.as(REGISTRAR).registerCredential(SOURCE_COMMITMENT);
+  it('appoints a registrar for an issuer type', () => {
+    vero.as(GOVERNANCE).appointRegistrar(JOURNALIST, PRESS_COUNCIL);
+
+    expect(vero.ledger.registrars.size()).toEqual(1n);
+    expect(toHex(vero.ledger.registrars.lookup(JOURNALIST))).toEqual(toHex(PRESS_COUNCIL));
+  });
+
+  it('appoints a different registrar for each issuer type', () => {
+    vero.as(GOVERNANCE).appointRegistrar(JOURNALIST, PRESS_COUNCIL);
+    vero.as(GOVERNANCE).appointRegistrar(SURGEON, MEDICAL_BOARD);
+
+    expect(vero.ledger.registrars.size()).toEqual(2n);
+    expect(toHex(vero.ledger.registrars.lookup(SURGEON))).toEqual(toHex(MEDICAL_BOARD));
+  });
+
+  it('rejects anyone who does not hold the governance secret', () => {
+    expect(() => {
+      vero.as(actor({ governanceSecret: secretFor('impostor') })).appointRegistrar(JOURNALIST, PRESS_COUNCIL);
+    }).toThrow('Caller is not governance');
+
+    expect(vero.ledger.registrars.size()).toEqual(0n);
+  });
+
+  it('rejects a registrar appointing its own peers — granting is not appointing', () => {
+    expect(() => {
+      vero.as(PRESS).appointRegistrar(SURGEON, MEDICAL_BOARD);
+    }).toThrow('Caller is not governance');
+  });
+});
+
+describe('registerCredential', () => {
+  let vero: VeroSimulator;
+
+  beforeEach(() => {
+    vero = deploy();
+    vero.as(GOVERNANCE).appointRegistrar(JOURNALIST, PRESS_COUNCIL);
+    vero.as(GOVERNANCE).appointRegistrar(SURGEON, MEDICAL_BOARD);
+  });
+
+  it('lets the appointed registrar grant a credential of its own type', () => {
+    vero.as(PRESS).registerCredential(SOURCE_SUBJECT, JOURNALIST, EXPIRY);
 
     expect(vero.ledger.credentialRegistry.firstFree()).toEqual(1n);
-    const path = vero.ledger.credentialRegistry.findPathForLeaf(SOURCE_COMMITMENT);
+    const path = vero.ledger.credentialRegistry.findPathForLeaf(SOURCE_LEAF);
     expect(path).toBeDefined();
-    expect(toHex(path!.leaf)).toEqual(toHex(SOURCE_COMMITMENT));
+    expect(toHex(path!.leaf)).toEqual(toHex(SOURCE_LEAF));
   });
 
-  it('rejects a caller who does not hold the registrar secret', () => {
+  it('stops a registrar granting a credential of somebody else’s type', () => {
+    // The point of the whole change. A medical board is authoritative about
+    // surgeons and has no standing to accredit journalists — and now cannot,
+    // whatever the subject asks it for.
     expect(() => {
-      vero.as(stateOf(NO_SECRET, new Uint8Array(32), secretFor('impostor'))).registerCredential(SOURCE_COMMITMENT);
-    }).toThrow('Caller is not the registrar');
+      vero.as(MEDICAL).registerCredential(SOURCE_SUBJECT, JOURNALIST, EXPIRY);
+    }).toThrow('Caller is not the registrar for this issuer type');
 
     expect(vero.ledger.credentialRegistry.firstFree()).toEqual(0n);
   });
 
-  it('rejects the source themselves — holding a credential is not authority to grant one', () => {
+  it('rejects a registrar that was never appointed', () => {
     expect(() => {
-      vero.as(SOURCE).registerCredential(SOURCE_COMMITMENT);
-    }).toThrow('Caller is not the registrar');
+      vero.as(actor({ registrarSecret: secretFor('self-appointed') })).registerCredential(SOURCE_SUBJECT, JOURNALIST, EXPIRY);
+    }).toThrow('Caller is not the registrar for this issuer type');
   });
 
-  it('accepts several credentials', () => {
-    vero.as(REGISTRAR).registerCredential(SOURCE_COMMITMENT);
-    vero.as(REGISTRAR).registerCredential(OTHER_COMMITMENT);
+  it('rejects an issuer type nobody has been appointed for', () => {
+    expect(() => {
+      vero.as(PRESS).registerCredential(SOURCE_SUBJECT, UNCLAIMED, EXPIRY);
+    }).toThrow('No registrar for this issuer type');
+  });
 
-    expect(vero.ledger.credentialRegistry.firstFree()).toEqual(2n);
-    expect(vero.ledger.credentialRegistry.findPathForLeaf(SOURCE_COMMITMENT)).toBeDefined();
-    expect(vero.ledger.credentialRegistry.findPathForLeaf(OTHER_COMMITMENT)).toBeDefined();
+  it('puts the credential where the registrar said, not where the subject asked', () => {
+    // The subject contributes a commitment to a secret and nothing else. The
+    // issuer type and expiry come from the registrar, so a subject cannot
+    // shop around for the registrar easiest to convince and still land a leaf
+    // that reads "journalist".
+    vero.as(MEDICAL).registerCredential(SOURCE_SUBJECT, SURGEON, EXPIRY);
+
+    expect(vero.ledger.credentialRegistry.findPathForLeaf(SOURCE_LEAF)).toBeUndefined();
+    expect(
+      vero.ledger.credentialRegistry.findPathForLeaf(leafFor(SOURCE_SECRET, MEDICAL_BOARD, SURGEON, EXPIRY)),
+    ).toBeDefined();
   });
 });
 
@@ -155,7 +222,7 @@ describe('verifySource', () => {
     let vero: VeroSimulator;
 
     beforeEach(() => {
-      vero = withRegisteredSource();
+      vero = withCredentialedSource();
     });
 
     it('records the post against the issuer type', () => {
@@ -178,7 +245,7 @@ describe('verifySource', () => {
 
       // The ledger learns the issuer type, never the leaf that proved it.
       expect(toHex(vero.ledger.verifiedPosts.lookup(POST))).toEqual(toHex(JOURNALIST));
-      expect(toHex(vero.ledger.verifiedPosts.lookup(POST))).not.toEqual(toHex(SOURCE_COMMITMENT));
+      expect(toHex(vero.ledger.verifiedPosts.lookup(POST))).not.toEqual(toHex(SOURCE_LEAF));
     });
   });
 
@@ -186,7 +253,7 @@ describe('verifySource', () => {
     let vero: VeroSimulator;
 
     beforeEach(() => {
-      vero = withRegisteredSource();
+      vero = withCredentialedSource();
     });
 
     afterEach(() => {
@@ -200,20 +267,36 @@ describe('verifySource', () => {
       }).toThrow('Credential has expired');
     });
 
-    it('rejects a credential proven with a different issuer type than it was issued for', () => {
-      // The issuer type is bound into the leaf, so claiming a different one
-      // derives a commitment that is not in the tree — and the path, which is
-      // derived from the real leaf, no longer matches it.
+    it('rejects an issuer type nobody has been appointed for', () => {
       expect(() => {
-        vero.as(SOURCE).at(NOW).verifySource(POST, EDITOR, EXPIRY);
+        vero.as(SOURCE).at(NOW).verifySource(POST, UNCLAIMED, EXPIRY);
+      }).toThrow('No registrar for this issuer type');
+    });
+
+    it('rejects a surgeon claiming to be a journalist', () => {
+      // A real credential, granted by a real registrar, proven under a type it
+      // was not granted for. The issuer type is in the leaf, so the claim
+      // derives a leaf that is not the one in the tree.
+      const vero = deploy();
+      vero.as(GOVERNANCE).appointRegistrar(JOURNALIST, PRESS_COUNCIL);
+      vero.as(GOVERNANCE).appointRegistrar(SURGEON, MEDICAL_BOARD);
+      vero.as(MEDICAL).registerCredential(SOURCE_SUBJECT, SURGEON, EXPIRY);
+
+      const surgeon = actor({
+        credentialSecret: SOURCE_SECRET,
+        credentialLeaf: leafFor(SOURCE_SECRET, MEDICAL_BOARD, SURGEON, EXPIRY),
+      });
+
+      expect(() => {
+        vero.as(surgeon).at(NOW).verifySource(POST, JOURNALIST, EXPIRY);
       }).toThrow('Merkle path does not belong to this credential');
     });
 
     it('rejects a valid path presented by someone who does not know the secret', () => {
       // The registry's leaves are public, so anyone can compute a genuine path
-      // for someone else's credential. Only `assert(path.leaf == commitment)`
-      // stops that path being enough on its own. This is the forgery guard.
-      const impostor = stateOf(secretFor('impostor'), SOURCE_COMMITMENT);
+      // for someone else's credential. Only `assert(path.leaf == leaf)` stops
+      // that path being enough on its own. This is the forgery guard.
+      const impostor = actor({ credentialSecret: secretFor('impostor'), credentialLeaf: SOURCE_LEAF });
 
       expect(() => {
         vero.as(impostor).at(NOW).verifySource(POST, JOURNALIST, EXPIRY);
@@ -221,11 +304,11 @@ describe('verifySource', () => {
     });
 
     it('rejects a credential registered somewhere else', () => {
-      // A path that is internally consistent — its leaf is the prover's own
-      // commitment — but was built against a different registry. Only
-      // `checkRoot` catches this one.
-      const elsewhere = withRegisteredSource();
-      const foreignPath = elsewhere.ledger.credentialRegistry.findPathForLeaf(SOURCE_COMMITMENT)!;
+      // A path that is internally consistent — its leaf is the prover's own —
+      // but was built against a different registry. Only `checkRoot` catches
+      // this one.
+      const elsewhere = withCredentialedSource();
+      const foreignPath = elsewhere.ledger.credentialRegistry.findPathForLeaf(SOURCE_LEAF)!;
 
       const here = deploy({
         witnesses: {
@@ -235,7 +318,8 @@ describe('verifySource', () => {
           ],
         },
       });
-      here.as(REGISTRAR).registerCredential(OTHER_COMMITMENT);
+      here.as(GOVERNANCE).appointRegistrar(JOURNALIST, PRESS_COUNCIL);
+      here.as(PRESS).registerCredential(deriveSubjectCommitment(secretFor('somebody else')), JOURNALIST, EXPIRY);
 
       expect(() => {
         here.as(SOURCE).at(NOW).verifySource(POST, JOURNALIST, EXPIRY);
@@ -244,15 +328,39 @@ describe('verifySource', () => {
       expect(here.ledger.verifiedPosts.size()).toEqual(0n);
     });
 
-    it('rejects a credential that was never registered at all', () => {
-      const unregistered = stateOf(OTHER_SECRET, OTHER_COMMITMENT);
+    it('rejects a credential that was never granted at all', () => {
+      const unregistered = actor({
+        credentialSecret: secretFor('never-granted'),
+        credentialLeaf: leafFor(secretFor('never-granted'), PRESS_COUNCIL, JOURNALIST, EXPIRY),
+      });
 
-      // The real witness cannot even produce a path — there is no leaf to
-      // find. The failure surfaces before the circuit runs, with an
-      // explanation rather than a bare assert.
+      // The witness cannot even produce a path — there is no leaf to find. The
+      // failure surfaces before the circuit runs, with an explanation rather
+      // than a bare assert.
       expect(() => {
         vero.as(unregistered).at(NOW).verifySource(POST, JOURNALIST, EXPIRY);
       }).toThrow('not in the on-chain registry');
+    });
+  });
+
+  describe('when governance replaces a registrar', () => {
+    it('stops honouring the credentials the previous registrar granted', () => {
+      // Governance replaces a registrar for one reason: the old one should no
+      // longer be trusted. Binding the granting registrar into the leaf is
+      // what makes that stick — the alternative would silently transfer every
+      // credential the compromised body issued to its replacement.
+      const vero = withCredentialedSource();
+      vero.as(SOURCE).at(NOW).verifySource(POST, JOURNALIST, EXPIRY);
+      expect(vero.ledger.verifiedPosts.size()).toEqual(1n);
+
+      vero.as(GOVERNANCE).appointRegistrar(JOURNALIST, MEDICAL_BOARD);
+
+      expect(() => {
+        vero.as(SOURCE).at(NOW).verifySource(OTHER_POST, JOURNALIST, EXPIRY);
+      }).toThrow('Merkle path does not belong to this credential');
+
+      // Posts verified while the old registrar stood are left as they were.
+      expect(vero.ledger.verifiedPosts.size()).toEqual(1n);
     });
   });
 
@@ -260,7 +368,7 @@ describe('verifySource', () => {
     let vero: VeroSimulator;
 
     beforeEach(() => {
-      vero = withRegisteredSource();
+      vero = withCredentialedSource();
     });
 
     it('accepts the credential one second before it expires', () => {
@@ -288,14 +396,18 @@ describe('verifySource', () => {
       // src/vero-credential.ts, and this test is what keeps it honest.
       const expiryInMillis = EXPIRY * 1000n;
       const secret = secretFor('millisecond-victim');
-      const commitment = deriveCredentialCommitment(secret, JOURNALIST, expiryInMillis);
 
       const vero = deploy();
-      vero.as(REGISTRAR).registerCredential(commitment);
+      vero.as(GOVERNANCE).appointRegistrar(JOURNALIST, PRESS_COUNCIL);
+      vero.as(PRESS).registerCredential(deriveSubjectCommitment(secret), JOURNALIST, expiryInMillis);
 
       // Twenty years after the credential was meant to lapse.
       const longAfter = Number(EXPIRY) + 20 * 365 * 24 * 60 * 60;
-      vero.as(stateOf(secret, commitment)).at(longAfter).verifySource(POST, JOURNALIST, expiryInMillis);
+      const holder = actor({
+        credentialSecret: secret,
+        credentialLeaf: leafFor(secret, PRESS_COUNCIL, JOURNALIST, expiryInMillis),
+      });
+      vero.as(holder).at(longAfter).verifySource(POST, JOURNALIST, expiryInMillis);
 
       expect(vero.ledger.verifiedPosts.size()).toEqual(1n);
     });

@@ -55,7 +55,9 @@ export const decodeIssuerType = (b: Uint8Array): string =>
 
 export type LedgerView = {
   contractAddress: string;
-  registrarCommitment: string;
+  governanceCommitment: string;
+  /** issuer type → the commitment of the registrar entitled to grant it */
+  registrars: Map<string, string>;
   verifiedCount: number;
   /** post hash (hex) → issuer type */
   verified: Map<string, string>;
@@ -147,9 +149,15 @@ export async function readLedger(): Promise<LedgerView | null> {
     verified.set(toHex(postHash), decodeIssuerType(issuerType));
   }
 
+  const registrars = new Map<string, string>();
+  for (const [issuerType, registrar] of ledger.registrars) {
+    registrars.set(decodeIssuerType(issuerType), toHex(registrar));
+  }
+
   return {
     contractAddress: address,
-    registrarCommitment: toHex(ledger.registrarCommitment),
+    governanceCommitment: toHex(ledger.governanceCommitment),
+    registrars,
     verifiedCount: Number(ledger.verifiedPosts.size()),
     verified,
   };

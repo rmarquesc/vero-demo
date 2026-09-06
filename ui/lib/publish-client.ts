@@ -241,29 +241,42 @@ export async function verifyPost(args: VerifyArgs): Promise<VerifyResult> {
   const secret = fromHex(args.credential.secretHex);
   const issuerType = encodeIssuerType(args.credential.issuerType);
   const expiry = BigInt(args.credential.expirySeconds);
-  const commitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
-    secret,
-    issuerType,
-    expiry,
-  );
-
+  // Publishers hold a credential and nothing else: no registrar authority, no
+  // governance authority.
   const privateState = {
     credentialSecret: secret,
-    credentialCommitment: commitment,
-    registrarSecret: new Uint8Array(32), // publishers are not registrars
+    registrarSecret: new Uint8Array(32),
+    governanceSecret: new Uint8Array(32),
   };
 
   const witnesses = {
     credentialSecret: ({ privateState: ps }: any) => [ps, ps.credentialSecret],
     registrarSecret: ({ privateState: ps }: any) => [ps, ps.registrarSecret],
+    governanceSecret: ({ privateState: ps }: any) => [ps, ps.governanceSecret],
     credentialPath: ({ ledger, privateState: ps }: any) => {
-      const found = ledger.credentialRegistry.findPathForLeaf(ps.credentialCommitment);
+      // The leaf is derived here rather than carried in private state, because
+      // it depends on which registrar the contract currently recognises for
+      // this issuer type — and that is ledger state, readable only from inside
+      // the witness.
+      if (!ledger.registrars.member(issuerType)) {
+        throw new Error(
+          `No registrar is appointed on-chain for "${args.credential.issuerType}", so ` +
+            'nothing of that kind can be proven yet.',
+        );
+      }
+      const leaf: Uint8Array = Vero.pureCircuits.deriveCredentialLeaf(
+        Vero.pureCircuits.deriveSubjectCommitment(ps.credentialSecret),
+        ledger.registrars.lookup(issuerType),
+        issuerType,
+        expiry,
+      );
+      const found = ledger.credentialRegistry.findPathForLeaf(leaf);
       if (!found) {
         throw new Error(
-          'This credential is not in the on-chain registry. It has to be registered ' +
-            'before it can prove anything — and note that the issuer type and expiry ' +
-            'are bound into the commitment, so a mismatch in either produces a ' +
-            'different leaf.',
+          'This credential is not in the on-chain registry. A registrar has to grant it ' +
+            'before it can prove anything — and note that the granting registrar, the ' +
+            'issuer type and the expiry are all bound into the leaf, so a mismatch in ' +
+            'any of them produces a different one.',
         );
       }
       return [ps, found];

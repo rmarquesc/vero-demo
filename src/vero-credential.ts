@@ -79,11 +79,17 @@ export type VeroCredential = {
   /** Unix timestamp in SECONDS — see the note above. */
   readonly expirySeconds: number;
   /**
-   * Authority to add credentials to the registry. Held by whoever runs the
-   * demo issuer; a real deployment would not keep this next to a subject's
-   * credential, but the demo plays both roles from one machine.
+   * Authority to grant credentials of this issuer type. Held by whoever runs
+   * the demo issuer; a real deployment would not keep this next to a subject's
+   * credential, but the demo plays every role from one machine.
    */
   readonly registrarSecret: Uint8Array;
+  /**
+   * Authority to appoint registrars. Distinct from the registrar secret, and
+   * a level above it: governance decides who may certify journalists,
+   * registrars decide who is one.
+   */
+  readonly governanceSecret: Uint8Array;
 };
 
 /**
@@ -111,15 +117,23 @@ function assertPlausibleExpiry(value: number, source: string): number {
  */
 export type VeroPrivateState = {
   readonly credentialSecret: Uint8Array;
-  readonly credentialCommitment: Uint8Array;
+  /**
+   * The leaf this credential occupies in the registry. The contract builds the
+   * leaf now, so the holder has to be told what it is — a witness cannot see
+   * the circuit's arguments, and without the leaf there is nothing to look a
+   * membership path up by.
+   */
+  readonly credentialLeaf: Uint8Array;
   readonly registrarSecret: Uint8Array;
+  readonly governanceSecret: Uint8Array;
 };
 
 export const createPrivateState = (
   credentialSecret: Uint8Array,
-  credentialCommitment: Uint8Array,
+  credentialLeaf: Uint8Array,
   registrarSecret: Uint8Array,
-): VeroPrivateState => ({ credentialSecret, credentialCommitment, registrarSecret });
+  governanceSecret: Uint8Array = new Uint8Array(32),
+): VeroPrivateState => ({ credentialSecret, credentialLeaf, registrarSecret, governanceSecret });
 
 type MerklePath = { leaf: Uint8Array; path: { sibling: { field: bigint }; goes_left: boolean }[] };
 
@@ -142,13 +156,19 @@ export const witnesses = {
     privateState.registrarSecret,
   ],
 
+  governanceSecret: ({ privateState }: { privateState: VeroPrivateState }): [VeroPrivateState, Uint8Array] => [
+    privateState,
+    privateState.governanceSecret,
+  ],
+
   credentialPath: ({ ledger, privateState }: { ledger: any; privateState: VeroPrivateState }): [VeroPrivateState, MerklePath] => {
-    const found = ledger.credentialRegistry.findPathForLeaf(privateState.credentialCommitment);
+    const found = ledger.credentialRegistry.findPathForLeaf(privateState.credentialLeaf);
     if (!found) {
       throw new Error(
         'This credential is not in the on-chain registry, so no membership path exists.\n' +
-          'Register it first (npm run register) — or, if it was registered under a different\n' +
-          'issuer type or expiry, those are bound into the commitment and produce a different leaf.',
+          'Register it first (npm run setup) — or, if it was granted by a different registrar,\n' +
+          'under a different issuer type or with a different expiry, all of those are bound\n' +
+          'into the leaf and produce a different one.',
       );
     }
     return [privateState, found];
@@ -214,11 +234,23 @@ function readFromFile(): VeroCredential | null {
     );
   }
 
+  if (!parsed.governanceSecret) {
+    // Written before registrars became plural. The contract now derives the
+    // leaf itself from the registrar's own commitment, so a credential from
+    // the old scheme cannot satisfy it whatever we do with the file.
+    throw new Error(
+      `${CREDENTIAL_FILE} predates the registrar registry: it has no governance secret.\n` +
+        `The contract now binds the granting registrar into the leaf, so this credential\n` +
+        `cannot satisfy it. Delete the file and run \`npm run setup\` to start over.`,
+    );
+  }
+
   return {
     secret: parseHexSecret(parsed.secret ?? '', CREDENTIAL_FILE),
     issuerType: parsed.issuerType ?? DEFAULT_ISSUER_TYPE,
     expirySeconds: assertPlausibleExpiry(Number(parsed.expirySeconds), CREDENTIAL_FILE),
     registrarSecret: parseHexSecret(parsed.registrarSecret ?? '', `${CREDENTIAL_FILE} (registrarSecret)`),
+    governanceSecret: parseHexSecret(parsed.governanceSecret, `${CREDENTIAL_FILE} (governanceSecret)`),
   };
 }
 
@@ -228,9 +260,11 @@ function writeToFile(credential: VeroCredential): void {
     issuerType: credential.issuerType,
     expirySeconds: credential.expirySeconds,
     registrarSecret: toHex(credential.registrarSecret),
+    governanceSecret: toHex(credential.governanceSecret),
     _note:
-      'Demo credential and registrar authority. The credential commitment binds secret, ' +
-      'issuerType and expiry; expiry is in SECONDS.',
+      'Demo credential plus the registrar and governance authorities. The leaf binds the ' +
+      'subject commitment, the granting registrar, the issuer type and the expiry; expiry ' +
+      'is in SECONDS.',
   };
   fs.writeFileSync(CREDENTIAL_FILE, JSON.stringify(body, null, 2) + '\n', { mode: 0o600 });
 }
@@ -262,12 +296,20 @@ export function loadOrCreateCredential(): { credential: VeroCredential; source: 
     if (!registrarSecret) {
       throw new Error('No registrar secret available — set VERO_REGISTRAR_SECRET or keep .vero-credential.');
     }
+    const governanceSecret =
+      process.env.VERO_GOVERNANCE_SECRET?.trim()
+        ? parseHexSecret(process.env.VERO_GOVERNANCE_SECRET.trim(), 'VERO_GOVERNANCE_SECRET')
+        : fromFile?.governanceSecret;
+    if (!governanceSecret) {
+      throw new Error('No governance secret available — set VERO_GOVERNANCE_SECRET or keep .vero-credential.');
+    }
     return {
       credential: {
         secret,
         issuerType: envIssuer ?? fromFile?.issuerType ?? DEFAULT_ISSUER_TYPE,
         expirySeconds,
         registrarSecret,
+        governanceSecret,
       },
       source: 'env',
     };
@@ -282,6 +324,7 @@ export function loadOrCreateCredential(): { credential: VeroCredential; source: 
     // expiry with every other credential issued this quarter.
     expirySeconds: nextQuarterBoundary(nowSeconds() + DEFAULT_VALIDITY_SECONDS),
     registrarSecret: Uint8Array.from(crypto.randomBytes(SECRET_BYTES)),
+    governanceSecret: Uint8Array.from(crypto.randomBytes(SECRET_BYTES)),
   };
   writeToFile(credential);
   return { credential, source: 'generated' };

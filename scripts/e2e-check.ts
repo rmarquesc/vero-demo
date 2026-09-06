@@ -76,9 +76,14 @@ async function main() {
   );
   const { credential } = loadOrCreateCredential();
   const credentialSecret = credential.secret;
-  const credentialCommitment: Uint8Array = Vero.pureCircuits.deriveCredentialCommitment(
-    credentialSecret,
-    encodeIssuerType(credential.issuerType),
+  const issuerType = encodeIssuerType(credential.issuerType);
+  const registrarCommitment: Uint8Array = Vero.pureCircuits.deriveRegistrarCommitment(
+    credential.registrarSecret,
+  );
+  const credentialLeaf: Uint8Array = Vero.pureCircuits.deriveCredentialLeaf(
+    Vero.pureCircuits.deriveSubjectCommitment(credentialSecret),
+    registrarCommitment,
+    issuerType,
     BigInt(credential.expirySeconds),
   );
 
@@ -122,7 +127,12 @@ async function main() {
       contractAddress: deployment.address,
       compiledContract: compiledContract as any,
       privateStateId: PRIVATE_STATE_ID,
-      initialPrivateState: createPrivateState(credentialSecret, credentialCommitment, credential.registrarSecret),
+      initialPrivateState: createPrivateState(
+        credentialSecret,
+        credentialLeaf,
+        credential.registrarSecret,
+        credential.governanceSecret,
+      ),
     });
   } catch (err: any) {
     await walletCtx.wallet.stop();
@@ -140,7 +150,7 @@ async function main() {
 
   // Decode the state as Vero's ledger. queryContractState returning non-null
   // only proves something is deployed there; this proves it is this contract,
-  // with the credential commitment its constructor was given.
+  // with the governance commitment its constructor was given.
   let ledgerState: any;
   try {
     ledgerState = Vero.ledger(onChainState.data);
@@ -148,25 +158,43 @@ async function main() {
     await walletCtx.wallet.stop();
     fail(`on-chain state is not a Vero ledger: ${err?.message ?? err}`);
   }
-  if (!(ledgerState.registrarCommitment?.length === 32)) {
+  if (!(ledgerState.governanceCommitment?.length === 32)) {
     await walletCtx.wallet.stop();
-    fail('registrarCommitment missing or not 32 bytes');
+    fail('governanceCommitment missing or not 32 bytes');
+  }
+
+  // A registrar has to be appointed for this issuer type, and it has to be the
+  // one that granted the credential — otherwise verifySource derives a
+  // different leaf and nothing verifies.
+  if (!ledgerState.registrars.member(issuerType)) {
+    await walletCtx.wallet.stop();
+    fail(`no registrar appointed for "${credential.issuerType}"`);
+  }
+  const appointed: Uint8Array = ledgerState.registrars.lookup(issuerType);
+  if (toHex(appointed) !== toHex(registrarCommitment)) {
+    await walletCtx.wallet.stop();
+    fail(
+      `the appointed registrar for "${credential.issuerType}" is ${toHex(appointed)}, ` +
+        `but the local credential was granted by ${toHex(registrarCommitment)}`,
+    );
   }
 
   // The registry has to actually contain this credential, otherwise
   // verifySource cannot produce a membership path and the deployment is
   // useless even though everything above passed.
-  const registryPath = ledgerState.credentialRegistry.findPathForLeaf(credentialCommitment);
+  const registryPath = ledgerState.credentialRegistry.findPathForLeaf(credentialLeaf);
   if (!registryPath) {
     await walletCtx.wallet.stop();
-    fail(`credential ${toHex(credentialCommitment)} is not in the on-chain registry`);
+    fail(`credential ${toHex(credentialLeaf)} is not in the on-chain registry`);
   }
 
   console.log(`✅ e2e-check passed`);
   console.log(`   contractAddress: ${deployment.address}`);
   console.log(`   network:         ${network}`);
-  console.log(`   registrar:       ${toHex(ledgerState.registrarCommitment)}`);
-  console.log(`   registry leaf:   ${toHex(credentialCommitment)} (present)`);
+  console.log(`   governance:      ${toHex(ledgerState.governanceCommitment)}`);
+  console.log(`   registrars:      ${ledgerState.registrars.size()} appointed`);
+  console.log(`   ${credential.issuerType}: ${toHex(appointed)}`);
+  console.log(`   registry leaf:   ${toHex(credentialLeaf)} (present)`);
   console.log(`   verified posts:  ${ledgerState.verifiedPosts.size()}`);
 
   // Report which kinds of issuer are represented on-chain. A post recorded
