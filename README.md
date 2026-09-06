@@ -51,9 +51,10 @@ assert(path.leaf == commitment, "Merkle path does not belong to this credential"
 ```
 
 binding the path to the commitment derived from the prover's own secret.
-`npm run test:forgery` is the regression test for exactly this: it holds an
+Two tests guard it: `npm test` proves the rejection in process, and
+`npm run test:forgery` proves it again through a real devnet. Both hold an
 unregistered secret while supplying a genuine path to a registered leaf, and
-fails if that is ever accepted.
+fail if that is ever accepted.
 
 ### Who can register
 
@@ -69,7 +70,8 @@ the credential secret never reaches the registrar.
 
 ## Quick start
 
-Requirements: Node 22, Docker with Compose v2, and the Compact compiler.
+Requirements: Node 22 and the Compact compiler. Docker with Compose v2 is
+needed for the devnet flow below; `npm test` does not use it.
 
 ```bash
 npm install
@@ -88,10 +90,42 @@ something to prove against.
 | `npm run compile` | Compile `contracts/vero.compact` |
 | `npm run setup` | Devnet + compile + deploy + register, end to end |
 | `npm run cli` | Interactive: verify a post, check a post, check balance |
+| `npm test` | Contract tests, in process — no Docker, no wallet, under a second |
 | `npm run test:e2e` | Reconnect, decode the ledger, assert the credential is registered |
 | `npm run test:forgery` | Security regression on the leaf-binding assert |
 | `npm run check-balance` | NIGHT / DUST balance |
 | `npm run clean` | Remove build artefacts and local state |
+
+---
+
+## Tests
+
+```bash
+npm test
+```
+
+23 tests, under a second, **and no Docker**. They drive the compiled circuits
+directly through the Compact runtime, so every `assert` in `vero.compact` fires
+exactly as it would on-chain — only the proving is skipped. If the contract has
+not been compiled yet the command compiles it first, without proving keys, so a
+fresh clone needs nothing but Node and the Compact compiler.
+
+There is a test for each rejection the contract can make, because those are the
+ones that decide whether any of this is worth anything:
+
+| What is tested | Why it is there |
+|---|---|
+| A genuine Merkle path belonging to somebody else | The forgery. Leaves are public, so the path alone must not be enough |
+| A path built against a different registry | `checkRoot` is the only thing that catches this one |
+| A credential proven under an issuer type it was not issued for | The issuer type is bound into the leaf |
+| Registration by anyone who is not the registrar | Authority cannot come from `ownPublicKey()` |
+| Expiry, one second either side of the boundary | Block time is the one thing a live devnet cannot rewind |
+| An expiry expressed in milliseconds | Regression for a bug that has no symptom — see below |
+
+The devnet scripts stay and are not replaced. `npm run test:e2e` and
+`npm run test:forgery` prove the same properties through a real node, proof
+server, indexer and wallet: they test the wiring, where `npm test` tests the
+contract.
 
 ### The credential
 
@@ -189,6 +223,10 @@ scripts/
   e2e-check.ts              smoke test + ledger read-back
   forgery-check.ts          security regression on the leaf binding
   fund-wallet.ts            fund a browser wallet on the local devnet
+  ensure-compiled.mjs       compiles the contract for `npm test` if needed
+test/
+  vero-simulator.ts         drives the circuits in process, with a settable clock
+  vero.test.ts              one test per rejection the contract can make
 src/
   vero-credential.ts        credential material, private state, witnesses
   deploy.ts                 deploy and register
