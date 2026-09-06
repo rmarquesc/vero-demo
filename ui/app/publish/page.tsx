@@ -45,6 +45,22 @@ export default function PublishPage() {
         </div>
       </header>
 
+      <div className="wip">
+        <b>Wave 1 status — this view connects, but cannot yet complete a proof.</b>
+        <br />
+        Browser wallets speak the DApp Connector API v4, which passes transactions as
+        serialized strings and returns nothing from <code>submitTransaction</code>. The
+        midnight-js version this contract is built on expects objects and a transaction id.
+        An official bridge exists for the proving half; the wallet half has to be written,
+        and that is Wave 2 work — specified in <code>docs/wave2-wallet-bridge.md</code>.
+        <br />
+        <br />
+        Everything up to and including holding a credential works against 1AM today.
+        Proving currently happens from the CLI, and the{' '}
+        <a href="/">reader view</a> shows the result — which is the half of the product a
+        reader actually experiences.
+      </div>
+
       <PublishClient config={config} />
 
       <div className="note">

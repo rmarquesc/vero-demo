@@ -133,6 +133,30 @@ devnet. Nothing has been exercised on a public network.
 | Credential revocation | not implemented |
 | Multiple registrars, issuer governance | out of scope for Wave 1 |
 
+### The demo surface
+
+`ui/` is a Next.js app with two views, added as an npm workspace so there is
+one `node_modules` and one copy of each SDK package.
+
+**Reader view (`/`)** — works, and needs no wallet. Checking a verification is
+a GraphQL query to the indexer plus the contract's own `ledger()` decoder, both
+server-side. That asymmetry is the product: proving is work for the source,
+checking is free for everyone else.
+
+**Publisher view (`/publish`)** — connects to a browser wallet and holds a
+credential, but cannot yet complete a proof. Browser wallets speak the DApp
+Connector API v4, which passes transactions as serialized strings; midnight-js
+4.1.1 expects objects. An official bridge exists for the proving half, none for
+the wallet half, and writing that adapter is deliberately **Wave 2** work —
+specified in [docs/wave2-wallet-bridge.md](./docs/wave2-wallet-bridge.md).
+
+Until then, proving is done from the CLI and the reader view shows the result.
+
+```bash
+npm --workspace ui run sync:assets   # after every compile
+npm --workspace ui run dev           # http://localhost:3100
+```
+
 ### Honest limitations
 
 - **The registrar is the trust anchor.** Vero proves that a credential was
@@ -145,6 +169,8 @@ devnet. Nothing has been exercised on a public network.
   direction once the registry has real issuers.
 - **Scope is not implemented.** The circuit checks registry membership and
   expiry, nothing finer.
+- **Proving from the browser does not work yet** — see the demo surface above.
+  The mechanism is proven from the CLI; the browser reads the result.
 
 ---
 
@@ -157,9 +183,12 @@ contracts/
 docs/
   wave3-issuer-keys-draft.txt   fuller design: issuer keys, scope, signatures
                                 (specification — does not compile)
+docs/
+  wave2-wallet-bridge.md    the connector/midnight-js gap, specified
 scripts/
   e2e-check.ts              smoke test + ledger read-back
   forgery-check.ts          security regression on the leaf binding
+  fund-wallet.ts            fund a browser wallet on the local devnet
 src/
   vero-credential.ts        credential material, private state, witnesses
   deploy.ts                 deploy and register

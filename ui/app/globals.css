@@ -355,3 +355,18 @@ h1 em {
 }
 .ok-box code { color: var(--text); }
 .ok-box a { color: var(--cyan); }
+
+/* Wave-1 honesty banner on the publisher view. */
+.wip {
+  margin: 26px 0 0;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 196, 107, 0.32);
+  border-left: 3px solid var(--amber);
+  background: rgba(255, 196, 107, 0.05);
+  font-size: 0.9rem;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+.wip b { color: var(--amber); font-weight: 500; }
+.wip code { font-family: var(--mono); font-size: 0.85em; color: var(--text); }
+.wip a { color: var(--cyan); }
