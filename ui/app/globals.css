@@ -181,7 +181,9 @@ h1 em {
   background: rgba(51, 230, 227, 0.07);
   box-shadow: 0 0 20px rgba(51, 230, 227, 0.15);
 }
-.seal .tick { font-size: 0.78rem; }
+/* The mark itself, not a tick borrowed from the font — the checked O is the
+   product's own glyph, and the badge is the one place it has to be right. */
+.seal .tick { width: 13px; height: 13px; display: block; flex: none; }
 .seal .kind {
   color: var(--text-dim);
   letter-spacing: 0.06em;

@@ -78,7 +78,7 @@ export default async function ReaderView() {
 
             {issuerType ? (
               <span className="seal">
-                <span className="tick">✓</span> Vero verified
+                <img className="tick" src="/vero-mark.svg" alt="" width={13} height={13} /> Vero verified
                 <span className="kind">{issuerType}</span>
               </span>
             ) : (

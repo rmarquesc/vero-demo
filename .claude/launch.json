@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "vero-ui",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--workspace", "ui", "run", "dev"],
+      "port": 3100
+    }
+  ]
+}
