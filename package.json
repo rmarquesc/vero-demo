@@ -17,6 +17,7 @@
     "proof-server:stop": "docker compose down",
     "clean": "node scripts/clean.mjs",
     "test": "node scripts/ensure-compiled.mjs && vitest run",
+    "test:names": "node scripts/ensure-compiled.mjs && vitest run --reporter=verbose",
     "test:e2e": "tsx scripts/e2e-check.ts",
     "test:forgery": "tsx scripts/forgery-check.ts",
     "address": "npx tsx scripts/print-address.ts",
