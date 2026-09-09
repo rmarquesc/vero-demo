@@ -10,7 +10,8 @@ to reveal. Readers get a trust signal backed by a proof rather than by an
 administrator's approval.
 
 Built for the [Midnight Buildathon](https://akindo.io), Wave 1.
-Project site and build log: **[rmarquesc.github.io/vero-website](https://rmarquesc.github.io/vero-website/)**
+
+**[Watch the three-minute demo](https://youtu.be/NzsAa9vuPl4)** · [Slide deck](https://rmarquesc.github.io/vero-website/slides.html) · [Project site and build log](https://rmarquesc.github.io/vero-website/)
 
 Vero does not decide whether a post is true. It provides evidence about the
 source behind it.
@@ -18,6 +19,10 @@ source behind it.
 ---
 
 ## For judges
+
+**Three minutes.** [Watch the demo](https://youtu.be/NzsAa9vuPl4) — the contract,
+a real proof against a local node, and the test suite. Everything below is the
+same thing, reproducible on your own machine.
 
 **Five minutes.** `npm install && npm test`. Thirty contract tests run in under
 a second with no Docker, no wallet and no node — they execute the compiled
