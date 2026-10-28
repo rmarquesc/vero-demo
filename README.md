@@ -28,7 +28,9 @@ same thing, reproducible on your own machine.
 a second with no Docker, no wallet and no node — they execute the compiled
 circuits directly through the Compact runtime, so every `assert` in
 `vero.compact` fires exactly as it would on-chain. The rejections are the half
-worth reading: [test/vero.test.ts](./test/vero.test.ts).
+worth reading: [test/vero.test.ts](./test/vero.test.ts). Alongside them, twelve
+tests hold the browser wallet bridge to the DApp Connector contract using real
+ledger transactions: [test/wallet-bridge.test.ts](./test/wallet-bridge.test.ts).
 
 **Twenty minutes.** `npm run setup` brings up a local devnet, compiles, deploys,
 appoints a registrar and grants a credential. `npm run test:e2e` reads the
@@ -171,7 +173,7 @@ something to prove against.
 npm test
 ```
 
-30 tests, under a second, **and no Docker**. They drive the compiled circuits
+42 tests, under a second, **and no Docker**. Thirty drive the compiled circuits
 directly through the Compact runtime, so every `assert` in `vero.compact` fires
 exactly as it would on-chain — only the proving is skipped. If the contract has
 not been compiled yet the command compiles it first, without proving keys, so a
@@ -191,6 +193,9 @@ ones that decide whether any of this is worth anything:
 | Appointing a registrar without the governance secret | Authority cannot come from `ownPublicKey()` |
 | Expiry, one second either side of the boundary | Block time is the one thing a live devnet cannot rewind |
 | An expiry expressed in milliseconds | Regression for a bug that has no symptom — see below |
+
+The other twelve test the wallet bridge — see
+[docs/wave2-wallet-bridge.md](./docs/wave2-wallet-bridge.md).
 
 The devnet scripts stay and are not replaced. `npm run test:e2e` and
 `npm run test:forgery` prove the same properties through a real node, proof
@@ -238,6 +243,9 @@ devnet. Nothing has been exercised on a public network.
 | Registrar refused a credential of another registrar's issuer type | observed |
 | Issuer type read back from the ledger | observed |
 | Fresh clone runs from scratch | observed |
+| Wallet bridge: hex encoding, sealed/unsealed types, Bech32m keys, transaction id | tested in process, real ledger transactions |
+| Publisher view connects, checks the network, reads keys — in a production build | observed, against a stand-in wallet |
+| A proof generated and submitted from the browser through 1AM | **not yet observed** |
 | Behaviour on `preview` / `preprod` | **untested** |
 | Credential revocation | not implemented |
 | Governance beyond one commitment (multisig, on-chain vote) | not implemented |
@@ -252,14 +260,16 @@ a GraphQL query to the indexer plus the contract's own `ledger()` decoder, both
 server-side. That asymmetry is the product: proving is work for the source,
 checking is free for everyone else.
 
-**Publisher view (`/publish`)** — connects to a browser wallet and holds a
-credential, but cannot yet complete a proof. Browser wallets speak the DApp
-Connector API v4, which passes transactions as serialized strings; midnight-js
-4.1.1 expects objects. An official bridge exists for the proving half, none for
-the wallet half, and writing that adapter is deliberately **Wave 2** work —
-specified in [docs/wave2-wallet-bridge.md](./docs/wave2-wallet-bridge.md).
+**Publisher view (`/publish`)** — connects to a browser wallet, holds a
+credential, and proves it. Browser wallets speak the DApp Connector API v4,
+which passes transactions as serialized strings; midnight-js 4.1.1 expects
+objects. Midnight ships an adapter for the proving half and none for the wallet
+half, so Vero has its own: [ui/lib/wallet-bridge.ts](./ui/lib/wallet-bridge.ts),
+described in [docs/wave2-wallet-bridge.md](./docs/wave2-wallet-bridge.md).
 
-Until then, proving is done from the CLI and the reader view shows the result.
+The wallet generates the proof by default, so the page needs nothing running
+locally. `VERO_PROVING=proof-server` sends proofs to the local proof server
+instead, as the CLI does.
 
 ```bash
 npm --workspace ui run sync:assets   # after every compile
@@ -283,8 +293,10 @@ npm --workspace ui run dev           # http://localhost:3100
   direction once the registry has real issuers.
 - **Scope is not implemented.** The circuit checks registry membership and
   expiry, nothing finer.
-- **Proving from the browser does not work yet** — see the demo surface above.
-  The mechanism is proven from the CLI; the browser reads the result.
+- **Proving from the browser has not yet been watched end to end.** The bridge
+  is tested against real ledger transactions and a stand-in wallet; the run
+  through 1AM against the devnet is the step still outstanding — see the
+  checklist in [docs/wave2-wallet-bridge.md](./docs/wave2-wallet-bridge.md).
 
 ---
 
@@ -298,7 +310,7 @@ docs/
   wave3-issuer-keys-draft.txt   fuller design: issuer keys, scope, signatures
                                 (specification — does not compile)
 docs/
-  wave2-wallet-bridge.md    the connector/midnight-js gap, specified
+  wave2-wallet-bridge.md    the connector/midnight-js gap, and how it is bridged
 scripts/
   e2e-check.ts              smoke test + ledger read-back
   forgery-check.ts          security regression on the leaf binding
@@ -307,6 +319,7 @@ scripts/
 test/
   vero-simulator.ts         drives the circuits in process, with a settable clock
   vero.test.ts              one test per rejection the contract can make
+  wallet-bridge.test.ts     the bridge against the DApp Connector contract
 src/
   vero-credential.ts        credential material, private state, witnesses
   deploy.ts                 deploy and register

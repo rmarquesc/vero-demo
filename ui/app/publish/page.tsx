@@ -1,4 +1,5 @@
 import PublishClient, { type Config } from './PublishClient';
+import type { Proving } from '@/lib/publish-client';
 import { NETWORK, INDEXER, contractAddress } from '@/lib/vero';
 
 export const dynamic = 'force-dynamic';
@@ -9,12 +10,21 @@ const PROOF_SERVERS: Record<string, string> = {
   preprod: 'http://127.0.0.1:6300',
 };
 
+/**
+ * The wallet proves by default: it is the only option that works once the app
+ * is hosted, because a visitor has no proof server of their own. Set
+ * VERO_PROVING=proof-server to prove against the local one instead, as the
+ * CLI does.
+ */
+const PROVING: Proving = process.env.VERO_PROVING === 'proof-server' ? 'proof-server' : 'wallet';
+
 export default function PublishPage() {
   const config: Config = {
     network: NETWORK,
     contractAddress: contractAddress(),
     indexerUri: INDEXER,
     indexerWsUri: INDEXER.replace(/^http/, 'ws') + '/ws',
+    proving: PROVING,
     proofServerUri: PROOF_SERVERS[NETWORK] ?? 'http://127.0.0.1:6300',
   };
 
@@ -40,25 +50,25 @@ export default function PublishPage() {
             <b>{config.contractAddress ? `${config.contractAddress.slice(0, 12)}…` : 'none'}</b>
           </span>
           <span>
-            proof server <b>{config.proofServerUri.replace(/^https?:\/\//, '')}</b>
+            proving{' '}
+            <b>
+              {config.proving === 'wallet'
+                ? 'in the wallet'
+                : config.proofServerUri.replace(/^https?:\/\//, '')}
+            </b>
           </span>
         </div>
       </header>
 
       <div className="wip">
-        <b>Wave 1 status — this view connects, but cannot yet complete a proof.</b>
+        <b>New in this wave — proving from the browser.</b>
         <br />
         Browser wallets speak the DApp Connector API v4, which passes transactions as
-        serialized strings and returns nothing from <code>submitTransaction</code>. The
+        serialized strings and returns nothing from <code>submitTransaction</code>; the
         midnight-js version this contract is built on expects objects and a transaction id.
-        An official bridge exists for the proving half; the wallet half has to be written,
-        and that is Wave 2 work — specified in <code>docs/wave2-wallet-bridge.md</code>.
-        <br />
-        <br />
-        Everything up to and including holding a credential works against 1AM today.
-        Proving currently happens from the CLI, and the{' '}
-        <a href="/">reader view</a> shows the result — which is the half of the product a
-        reader actually experiences.
+        Midnight ships an adapter for the proving half and none for the wallet half, so Vero
+        has its own: <code>ui/lib/wallet-bridge.ts</code>. How it works, and what has been
+        tested against what, is in <code>docs/wave2-wallet-bridge.md</code>.
       </div>
 
       <PublishClient config={config} />

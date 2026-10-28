@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import type { ConnectedAPI } from '@midnight-ntwrk/dapp-connector-api';
 import { POSTS } from '@/lib/posts';
 import {
   connectWallet,
@@ -11,6 +12,7 @@ import {
   type StoredCredential,
   type Stage,
   type VerifyResult,
+  type Proving,
 } from '@/lib/publish-client';
 
 export type Config = {
@@ -18,6 +20,7 @@ export type Config = {
   contractAddress: string | null;
   indexerUri: string;
   indexerWsUri: string;
+  proving: Proving;
   proofServerUri: string;
 };
 
@@ -33,7 +36,8 @@ const STAGE_TEXT: Record<Stage, string> = {
 };
 
 export default function PublishClient({ config }: { config: Config }) {
-  const [walletApi, setWalletApi] = useState<any>(null);
+  const [walletApi, setWalletApi] = useState<ConnectedAPI | null>(null);
+  const [walletName, setWalletName] = useState<string | null>(null);
   const [address, setAddress] = useState<string | null>(null);
   const [credential, setCredential] = useState<StoredCredential | null>(null);
   const [selected, setSelected] = useState<string>(POSTS[0].id);
@@ -61,8 +65,9 @@ export default function PublishClient({ config }: { config: Config }) {
     setError(null);
     setStage('connecting');
     try {
-      const { api, address: addr } = await connectWallet();
+      const { api, name, address: addr } = await connectWallet(config.network);
       setWalletApi(api);
+      setWalletName(name);
       setAddress(addr);
       setStage('connected');
     } catch (e) {
@@ -115,6 +120,7 @@ export default function PublishClient({ config }: { config: Config }) {
         contractAddress: config.contractAddress,
         indexerUri: config.indexerUri,
         indexerWsUri: config.indexerWsUri,
+        proving: config.proving,
         proofServerUri: config.proofServerUri,
         networkId: config.network,
         credential,
@@ -142,13 +148,20 @@ export default function PublishClient({ config }: { config: Config }) {
         </p>
         {address ? (
           <p className="step-ok">
-            Connected <code>{address.slice(0, 22)}…</code>
+            Connected to {walletName} <code>{address.slice(0, 22)}…</code>
           </p>
         ) : (
           <>
             <p className="step-help">
-              Any Midnight wallet works — the connector API is the same. Unlock it first, and point
-              it at the proof server this app uses: <code>{config.proofServerUri}</code>
+              Any Midnight wallet that speaks DApp Connector API v4 works. Unlock it first, and set
+              it to the <code>{config.network}</code> network.
+              {config.proving === 'proof-server' && (
+                <>
+                  {' '}
+                  Proofs go to the proof server at <code>{config.proofServerUri}</code>, so it has
+                  to be running.
+                </>
+              )}
             </p>
             <button className="btn" onClick={onConnect} disabled={stage === 'connecting'}>
               {stage === 'connecting' ? 'Waiting…' : 'Connect wallet'}

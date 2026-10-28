@@ -9,6 +9,8 @@
  * it.
  */
 
+import type { ConnectedAPI } from '@midnight-ntwrk/dapp-connector-api';
+
 export type Stage =
   | 'idle'
   | 'connecting'
@@ -82,71 +84,53 @@ export async function hashPost(content: string): Promise<Uint8Array> {
 // ─── Wallet ────────────────────────────────────────────────────────────────────
 
 /**
- * Any injected Midnight wallet will do — the connector API is what matters,
- * not the brand. 1AM is preferred because the Midnight template docs target
- * it, but Lace and anything else injecting into window.midnight work the same.
+ * Methods this app will call, announced up front so a wallet that asks for
+ * permission per method can ask once, at connect time, rather than halfway
+ * through a proof.
  */
-export async function detectWallet(): Promise<any> {
-  const injected = (globalThis as any).midnight;
-  if (!injected) {
-    throw new Error(
-      'No Midnight wallet found. Install one (1AM or Lace), unlock it, and reload this page.',
-    );
-  }
-  const preferred = injected['1am'] ?? injected.mnLace ?? Object.values(injected)[0];
-  if (!preferred) throw new Error('window.midnight exists but exposes no wallet.');
-  return preferred;
-}
+const WALLET_METHODS = [
+  'getShieldedAddresses',
+  'getUnshieldedAddress',
+  'getProvingProvider',
+  'balanceUnsealedTransaction',
+  'submitTransaction',
+] as const;
+
+export type ConnectedWallet = {
+  api: ConnectedAPI;
+  name: string;
+  address: string;
+};
 
 /**
- * Wallets disagree on the handshake. 1AM exposes `connect()`; the CAIP-style
- * connectors expose `enable()`; some inject the API directly with neither.
- * Trying each in turn is cheaper than special-casing brands, and the errors
- * name what was actually found rather than what was expected.
+ * Any injected Midnight wallet will do — the connector API is what matters,
+ * not the brand. The bridge picks whichever speaks connector v4.
  */
-async function openSession(connector: any): Promise<any> {
-  for (const method of ['connect', 'enable'] as const) {
-    if (typeof connector[method] === 'function') {
-      const api = await connector[method]();
-      return api ?? connector;
-    }
-  }
-  if (typeof connector.state === 'function') return connector;
-  const surface = Object.keys(connector).join(', ') || '(nothing enumerable)';
-  throw new Error(
-    `This wallet exposes no way to connect. It offers: ${surface}. ` +
-      'Expected connect(), enable(), or a ready API with state().',
+export async function connectWallet(networkId: string): Promise<ConnectedWallet> {
+  const { selectWallet, connectToWallet, connectorWalletProvider } = await import(
+    './wallet-bridge'
   );
-}
+  const wallet = selectWallet((globalThis as any).midnight);
+  const api = await connectToWallet(wallet, networkId);
 
-export async function connectWallet(): Promise<{ api: any; address: string }> {
-  const connector = await detectWallet();
-  const api = await openSession(connector);
-
-  if (typeof api.state !== 'function') {
-    throw new Error(
-      `Connected, but the wallet API has no state(). It offers: ${Object.keys(api).join(', ')}`,
-    );
+  try {
+    await api.hintUsage([...WALLET_METHODS]);
+  } catch {
+    // A hint, not a requirement: wallets that do not implement it still work.
   }
 
-  const state = await api.state();
-  const address: string =
-    state.address ?? state.unshieldedAddress ?? state.addresses?.unshielded ?? '(unknown address)';
-  return { api, address };
+  // Built once here and thrown away, so that keys the bridge cannot read fail
+  // at connect time — next to the button that caused it — and not after the
+  // proof has already been generated.
+  await connectorWalletProvider(api, networkId);
+
+  const { unshieldedAddress } = await api.getUnshieldedAddress();
+  return { api, name: wallet.name, address: unshieldedAddress };
 }
 
 // ─── Proving ───────────────────────────────────────────────────────────────────
 
 const ZK_BASE = '/zk/vero';
-
-function coinPublicKeyToBytes(pk: unknown): Uint8Array {
-  if (pk instanceof Uint8Array) return pk.length === 32 ? pk : pk.slice(0, 32);
-  if (typeof pk === 'string') return fromHex(pk);
-  if (pk && typeof pk === 'object' && 'bytes' in (pk as object)) {
-    return coinPublicKeyToBytes((pk as { bytes: unknown }).bytes);
-  }
-  return new Uint8Array(32);
-}
 
 /** In-memory private state. The browser has no LevelDB, and a demo needs none. */
 function createPrivateStateProvider() {
@@ -198,11 +182,20 @@ function createPublicDataProvider(indexerUri: string, indexerWsUri: string, base
   };
 }
 
+/**
+ * Who generates the proof. `wallet` hands it to the wallet through the
+ * connector, so the page needs nothing running locally — the only option for
+ * a hosted deployment. `proof-server` uses a proof server at a URL the app
+ * chooses, which is what the CLI does and the easier one to debug.
+ */
+export type Proving = 'wallet' | 'proof-server';
+
 export type VerifyArgs = {
-  walletApi: any;
+  walletApi: ConnectedAPI;
   contractAddress: string;
   indexerUri: string;
   indexerWsUri: string;
+  proving: Proving;
   proofServerUri: string;
   networkId: string;
   credential: StoredCredential;
@@ -220,15 +213,21 @@ export async function verifyPost(args: VerifyArgs): Promise<VerifyResult> {
     { CompiledContract },
     { findDeployedContract },
     { httpClientProofProvider },
+    { dappConnectorProofProvider },
     { indexerPublicDataProvider },
     { FetchZkConfigProvider },
+    { CostModel },
+    { connectorWalletProvider },
   ] = await Promise.all([
     import('@midnight-ntwrk/midnight-js-network-id'),
     import('@midnight-ntwrk/midnight-js-protocol/compact-js'),
     import('@midnight-ntwrk/midnight-js-contracts'),
     import('@midnight-ntwrk/midnight-js-http-client-proof-provider'),
+    import('@midnight-ntwrk/midnight-js-dapp-connector-proof-provider'),
     import('@midnight-ntwrk/midnight-js-indexer-public-data-provider'),
     import('@midnight-ntwrk/midnight-js-fetch-zk-config-provider'),
+    import('@midnight-ntwrk/midnight-js-protocol/ledger'),
+    import('./wallet-bridge'),
   ]);
 
   setNetworkId(args.networkId as never);
@@ -289,14 +288,32 @@ export async function verifyPost(args: VerifyArgs): Promise<VerifyResult> {
   );
 
   const zkConfigProvider = new FetchZkConfigProvider(ZK_BASE, fetch.bind(globalThis));
-  const state = await args.walletApi.state();
 
+  // callTx proves, balances, submits and waits in one call, so the stages are
+  // reported from inside the providers — otherwise the page would say
+  // "generating the proof" while the wallet is already asking for a signature.
+  const bridge = await connectorWalletProvider(args.walletApi, args.networkId);
   const walletProvider = {
-    getCoinPublicKey: () => coinPublicKeyToBytes(state.coinPublicKey),
-    getEncryptionPublicKey: () => state.encryptionPublicKey,
-    balanceTx: (tx: unknown, ttl?: Date) => args.walletApi.balanceTransaction(tx, ttl),
-    submitTx: (tx: unknown) => args.walletApi.submitTransaction(tx),
+    ...bridge,
+    balanceTx: (tx: Parameters<typeof bridge.balanceTx>[0], ttl?: Date) => {
+      say('submitting', 'approve the transaction in your wallet');
+      return bridge.balanceTx(tx, ttl);
+    },
+    submitTx: async (tx: Parameters<typeof bridge.submitTx>[0]) => {
+      const txId = await bridge.submitTx(tx);
+      say('submitting', 'submitted — waiting for it to land in a block');
+      return txId;
+    },
   };
+
+  const proofProvider =
+    args.proving === 'wallet'
+      ? await dappConnectorProofProvider(
+          args.walletApi,
+          zkConfigProvider,
+          CostModel.initialCostModel(),
+        )
+      : httpClientProofProvider(args.proofServerUri, zkConfigProvider);
 
   const providers = {
     privateStateProvider: createPrivateStateProvider(),
@@ -306,7 +323,7 @@ export async function verifyPost(args: VerifyArgs): Promise<VerifyResult> {
       indexerPublicDataProvider(args.indexerUri, args.indexerWsUri),
     ),
     zkConfigProvider,
-    proofProvider: httpClientProofProvider(args.proofServerUri, zkConfigProvider),
+    proofProvider,
     walletProvider,
     midnightProvider: walletProvider,
   };
@@ -320,12 +337,15 @@ export async function verifyPost(args: VerifyArgs): Promise<VerifyResult> {
     initialPrivateState: privateState,
   });
 
-  say('proving', 'generating the zero-knowledge proof');
+  say(
+    'proving',
+    args.proving === 'wallet'
+      ? 'your wallet is generating the zero-knowledge proof'
+      : 'generating the zero-knowledge proof',
+  );
 
   const postHash = await hashPost(args.postContent);
   const tx = await deployed.callTx.verifySource(postHash, issuerType, expiry);
-
-  say('submitting');
 
   return { txId: tx.public.txId, blockHeight: tx.public.blockHeight };
 }
